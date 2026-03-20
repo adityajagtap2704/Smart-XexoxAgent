@@ -1,0 +1,220 @@
+# Smart Xerox — Print Agent Setup Guide
+# How to connect your website to the shop's printer
+
+==============================================================
+ WHAT THIS DOES
+==============================================================
+
+When shopkeeper clicks "Accept" in the browser:
+  1. Backend marks order as "accepted"
+  2. This agent (running on shop PC) detects it within 5 seconds
+  3. Downloads the PDF from AWS S3
+  4. Sends it to the printer automatically
+  5. Calls your backend to mark status as "printing"
+  6. User's screen updates to "Printing..." instantly via Socket.IO
+
+The shopkeeper's ONLY action: click Accept → wait for paper → Mark Ready.
+
+==============================================================
+ STEP 1 — INSTALL NODE.JS ON SHOP PC (one time only)
+==============================================================
+
+1. Open browser on shop PC, go to: https://nodejs.org
+2. Click the big green "LTS" button to download
+3. Run the installer → click Next all the way → Finish
+4. To verify: press Windows+R → type "cmd" → Enter
+   In the black window type: node -v
+   You should see something like: v20.11.0
+   If you see that, Node.js is installed correctly.
+
+==============================================================
+ STEP 2 — COPY THE PRINT-AGENT FOLDER TO SHOP PC
+==============================================================
+
+Option A (USB drive):
+  Copy the entire "print-agent" folder to: C:\SmartXerox\print-agent\
+
+Option B (from your GitHub):
+  Open Command Prompt → type:
+    git clone https://github.com/adityajagtap2704/Smart-Xexox.git C:\SmartXerox
+  The print-agent folder will be at: C:\SmartXerox\print-agent\
+
+==============================================================
+ STEP 3 — INSTALL DEPENDENCIES
+==============================================================
+
+1. Open Command Prompt (Windows key → type "cmd" → Enter)
+2. Type these commands one by one, press Enter after each:
+
+   cd C:\SmartXerox\print-agent
+   npm install
+
+Wait until it says "added X packages". This downloads pdf-to-printer,
+axios, dotenv, and winston.
+
+==============================================================
+ STEP 4 — CREATE THE .env FILE
+==============================================================
+
+1. Open File Explorer → go to C:\SmartXerox\print-agent\
+2. Right-click on ".env.example" → Copy → Paste → rename to ".env"
+   (remove the ".example" part)
+3. Right-click on ".env" → Open with → Notepad
+
+Fill in these 3 values:
+
+  API_URL=https://your-api.render.com/api
+  (your backend URL from Render dashboard)
+
+  SHOP_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+  (see Step 4a below to get this token)
+
+  PRINTER_NAME=HP LaserJet Pro M404dn
+  (see Step 4b below to get this name)
+
+Save the file (Ctrl+S).
+
+── Step 4a: Get the JWT token ──────────────────────────────
+1. Open Chrome on the shop PC
+2. Go to your shop dashboard URL (e.g. https://smartxerox.vercel.app/shop)
+3. Log in with the shopkeeper account
+4. Press F12 → click "Application" tab (top row)
+5. In left panel: click "Local Storage" → click your site URL
+6. Find "token" in the list → double-click its Value column
+7. Press Ctrl+A to select all → Ctrl+C to copy
+8. Paste it as SHOP_TOKEN= in your .env file
+
+── Step 4b: Get the exact printer name ─────────────────────
+1. Windows Settings → Bluetooth & devices → Printers & scanners
+2. Click your printer → note the EXACT name shown at top
+   Example: "HP LaserJet Pro M404dn" or "EPSON L3150 Series"
+3. Paste that exact name as PRINTER_NAME= in .env
+   (or leave blank to use Windows default printer)
+
+==============================================================
+ STEP 5 — TEST IT
+==============================================================
+
+1. Open Command Prompt
+2. cd C:\SmartXerox\print-agent
+3. node agent.js
+
+You should see output like:
+  [2024-01-15 10:30:00] INFO: Smart Xerox Print Agent — STARTED
+  [2024-01-15 10:30:00] INFO: Backend: https://your-api.render.com/api
+  [2024-01-15 10:30:00] INFO: Available printers on this PC:
+  [2024-01-15 10:30:00] INFO:   1. HP LaserJet Pro M404dn  ← DEFAULT
+
+Now place a test order in your app → click Accept in the shop dashboard
+→ watch the agent output → document should print automatically.
+
+==============================================================
+ STEP 6 — MAKE IT RUN AUTOMATICALLY ON WINDOWS STARTUP
+==============================================================
+
+Without this step, the agent stops when you close Command Prompt.
+
+1. Open Command Prompt AS ADMINISTRATOR
+   (Windows key → type "cmd" → right-click → "Run as administrator")
+
+2. Install PM2 (process manager):
+   npm install -g pm2
+   npm install -g pm2-windows-startup
+
+3. Register PM2 as Windows service:
+   pm2-startup install
+
+4. Start the agent with PM2:
+   cd C:\SmartXerox\print-agent
+   pm2 start agent.js --name "SmartXerox-PrintAgent"
+
+5. Save PM2 config so it survives restart:
+   pm2 save
+
+Now the agent will:
+  - Start automatically when Windows boots
+  - Restart automatically if it crashes
+  - Run in the background without any window
+
+==============================================================
+ DAILY OPERATIONS — HOW TO CHECK STATUS
+==============================================================
+
+Open Command Prompt and type:
+
+  pm2 status
+  → Shows if agent is running (green = good)
+
+  pm2 logs SmartXerox-PrintAgent
+  → Shows last print activity
+
+  pm2 restart SmartXerox-PrintAgent
+  → Use this after updating .env (e.g. new token)
+
+  pm2 stop SmartXerox-PrintAgent
+  → Temporarily stop printing
+
+==============================================================
+ WHEN TOKEN EXPIRES (every 7 days)
+==============================================================
+
+Your JWT token expires after 7 days (set in backend .env as JWT_EXPIRES_IN=7d)
+When this happens, the agent log will show "JWT token expired".
+
+Fix:
+1. Log in to shop dashboard in Chrome
+2. Get new token (same process as Step 4a)
+3. Open .env in Notepad → replace SHOP_TOKEN value → Save
+4. Run: pm2 restart SmartXerox-PrintAgent
+
+TIP: Change JWT_EXPIRES_IN=30d in your backend .env before deployment
+     to reduce how often you need to refresh the token.
+
+==============================================================
+ TROUBLESHOOTING
+==============================================================
+
+Problem: "Cannot find module 'pdf-to-printer'"
+Fix: cd C:\SmartXerox\print-agent && npm install
+
+Problem: "PRINTER_NAME not found"
+Fix: Run "node agent.js" once, look at the printer list it prints.
+    Copy the exact name into .env PRINTER_NAME=
+
+Problem: Agent prints but status doesn't update
+Fix: Check API_URL is correct. Check internet connection on shop PC.
+
+Problem: "401 Unauthorized"
+Fix: JWT token expired. Get fresh token (Step 4a) and restart.
+
+Problem: PDF downloads but doesn't print
+Fix: Make sure the default printer is set in Windows Settings.
+    Try leaving PRINTER_NAME= blank to use default.
+
+Problem: Prints twice
+Fix: This happens if agent is running twice. Run: pm2 list
+    Kill extra instances: pm2 delete all → pm2 start agent.js --name SmartXerox-PrintAgent → pm2 save
+
+==============================================================
+ FILE LOCATIONS SUMMARY
+==============================================================
+
+C:\SmartXerox\
+  print-agent\
+    agent.js          ← main program (don't edit)
+    .env              ← YOUR CONFIG (edit this)
+    .env.example      ← template (don't edit)
+    package.json      ← dependencies list
+    print-agent.log   ← auto-created, shows print history
+    node_modules\     ← auto-created by npm install
+
+==============================================================
+ FOR ADDING A SECOND SHOP IN FUTURE
+==============================================================
+
+1. Copy the print-agent folder to the second shop's PC
+2. Create a new .env with THAT shop's SHOP_TOKEN and PRINTER_NAME
+3. Follow Steps 2-6 above on that PC
+
+Each shop PC runs its own copy of the agent with its own token.
+The backend handles which orders belong to which shop.
