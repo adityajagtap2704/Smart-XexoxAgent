@@ -77,26 +77,34 @@ const Register = () => {
               <Label>Phone</Label>
               <div className="relative mt-1.5">
                 <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input type="tel" placeholder="+91 98765 43210" value={form.phone} onChange={(e) => update('phone', e.target.value)} className="pl-10" required />
+                <Input type="tel" placeholder="9876543210" value={form.phone} onChange={(e) => update('phone', e.target.value)} className="pl-10" required />
               </div>
             </div>
             <div>
               <Label>Password</Label>
               <div className="relative mt-1.5">
                 <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input type={showPassword ? 'text' : 'password'} placeholder="••••••••" value={form.password} onChange={(e) => update('password', e.target.value)} className="pl-10 pr-10" required minLength={6} />
+                <Input
+                  type={showPassword ? 'text' : 'password'}
+                  placeholder="••••••••"
+                  value={form.password}
+                  onChange={(e) => update('password', e.target.value)}
+                  className="pl-10 pr-10"
+                  required
+                  minLength={6}
+                />
                 <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground">
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
             </div>
+
             <div>
               <Label>Register as</Label>
-              <div className="mt-1.5 grid grid-cols-3 gap-2">
+              <div className="mt-1.5 grid grid-cols-2 gap-2">
                 {[
-                  { value: 'user', label: 'User' },
-                  { value: 'shop', label: 'Shop Owner' },
-                  { value: 'admin', label: 'Admin' },
+                  { value: 'user',        label: 'User'        },
+                  { value: 'shopkeeper',  label: 'Shop Owner'  },
                 ].map((r) => (
                   <button
                     key={r.value}
@@ -113,6 +121,7 @@ const Register = () => {
                 ))}
               </div>
             </div>
+
             <Button type="submit" className="w-full sunrise-gradient text-primary-foreground sunrise-shadow-sm" disabled={loading}>
               {loading ? 'Creating account...' : 'Create Account'}
             </Button>

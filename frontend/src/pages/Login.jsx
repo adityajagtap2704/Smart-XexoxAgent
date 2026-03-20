@@ -8,15 +8,22 @@ import { Printer, Mail, Lock, Eye, EyeOff } from 'lucide-react';
 import { toast } from 'sonner';
 import { motion } from 'framer-motion';
 
+// Redirect each role to their correct dashboard
+const getRoleRedirect = (role) => {
+  if (role === 'shopkeeper') return '/shop';
+  if (role === 'admin')      return '/admin';
+  return '/dashboard'; // user
+};
+
 const Login = () => {
   const { login, verifyOTP } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [otp, setOtp] = useState('');
+  const [email, setEmail]           = useState('');
+  const [password, setPassword]     = useState('');
+  const [otp, setOtp]               = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [showOTP, setShowOTP] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [showOTP, setShowOTP]       = useState(false);
+  const [loading, setLoading]       = useState(false);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -28,7 +35,9 @@ const Login = () => {
         toast.info('OTP sent to your email');
       } else {
         toast.success('Login successful!');
-        navigate('/dashboard');
+        // Redirect based on role returned from login
+        const storedUser = JSON.parse(localStorage.getItem('user') || '{}');
+        navigate(getRoleRedirect(storedUser.role));
       }
     } catch (err) {
       toast.error(err.response?.data?.message || 'Login failed');
@@ -43,7 +52,8 @@ const Login = () => {
     try {
       await verifyOTP(email, otp);
       toast.success('Verified successfully!');
-      navigate('/dashboard');
+      const storedUser = JSON.parse(localStorage.getItem('user') || '{}');
+      navigate(getRoleRedirect(storedUser.role));
     } catch (err) {
       toast.error(err.response?.data?.message || 'OTP verification failed');
     } finally {
@@ -93,7 +103,15 @@ const Login = () => {
                 <Label htmlFor="password">Password</Label>
                 <div className="relative mt-1.5">
                   <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input id="password" type={showPassword ? 'text' : 'password'} placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} className="pl-10 pr-10" required />
+                  <Input
+                    id="password"
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="pl-10 pr-10"
+                    required
+                  />
                   <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground">
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>

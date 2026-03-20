@@ -1,6 +1,13 @@
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 
+// Each role has their own home dashboard
+const roleDashboard = {
+  user:        '/dashboard',
+  shopkeeper:  '/shop',
+  admin:       '/admin',
+};
+
 const ProtectedRoute = ({ children, roles }) => {
   const { isAuthenticated, user, loading } = useAuth();
 
@@ -12,8 +19,14 @@ const ProtectedRoute = ({ children, roles }) => {
     );
   }
 
+  // Not logged in → go to login
   if (!isAuthenticated) return <Navigate to="/login" replace />;
-  if (roles && user && !roles.includes(user.role)) return <Navigate to="/dashboard" replace />;
+
+  // Wrong role → redirect to their own correct dashboard
+  if (roles && user && !roles.includes(user.role)) {
+    const redirect = roleDashboard[user.role] || '/dashboard';
+    return <Navigate to={redirect} replace />;
+  }
 
   return <>{children}</>;
 };

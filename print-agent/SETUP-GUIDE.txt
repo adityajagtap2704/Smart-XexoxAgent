@@ -218,3 +218,7 @@ C:\SmartXerox\
 
 Each shop PC runs its own copy of the agent with its own token.
 The backend handles which orders belong to which shop.
+
+
+
+https://claude.ai/share/9d642c7b-8781-42f7-b312-81c0600e68e3
