@@ -5,6 +5,25 @@ const { sendEmail } = require('../utils/email');
 const { AppError, asyncHandler } = require('../utils/helpers');
 const logger = require('../config/logger');
 
+// ─── Cookie Options ───────────────────────────────────────────────────────────
+const getCookieOptions = () => ({
+  expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+  httpOnly: true,      // Cannot be accessed by JavaScript — XSS protection
+  secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+  sameSite: 'strict',  // CSRF protection
+});
+
+// ─── Password Strength Validator ──────────────────────────────────────────────
+const validatePasswordStrength = (password) => {
+  const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
+  if (!passwordRegex.test(password)) {
+    throw new AppError(
+      'Password must be at least 8 characters and include uppercase, lowercase, number and special character (@$!%*?&)',
+      400
+    );
+  }
+};
+
 // ─── Token Helpers ────────────────────────────────────────────────────────────
 const signToken = (id, role) =>
   jwt.sign({ id, role }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN });
@@ -23,6 +42,9 @@ const sendTokens = async (user, statusCode, res, message = 'Success') => {
   user.password = undefined;
   user.otp = undefined;
 
+  // NEW — Set JWT as HttpOnly cookie
+  res.cookie('jwt', token, getCookieOptions());
+
   res.status(statusCode).json({
     success: true,
     message,
@@ -33,6 +55,9 @@ const sendTokens = async (user, statusCode, res, message = 'Success') => {
 // ─── Register ─────────────────────────────────────────────────────────────────
 exports.register = asyncHandler(async (req, res) => {
   const { name, email, phone, password, role } = req.body;
+
+  // NEW — Validate password strength before saving
+  validatePasswordStrength(password);
 
   const existingUser = await User.findOne({ $or: [{ email }, { phone }] });
   if (existingUser) {
@@ -107,12 +132,10 @@ exports.sendLoginOTP = asyncHandler(async (req, res) => {
   const otp = user.generateOTP('login');
   await user.save({ validateBeforeSave: false });
 
-  // In production, integrate with SMS provider. For now, log OTP (dev) or email.
   if (process.env.NODE_ENV === 'development') {
     logger.info(`🔐 OTP for ${phone}: ${otp}`);
   }
 
-  // Optionally email OTP
   if (user.email) {
     try {
       await sendEmail({
@@ -161,6 +184,9 @@ exports.refreshToken = asyncHandler(async (req, res) => {
   user.refreshToken = newRefreshToken;
   await user.save({ validateBeforeSave: false });
 
+  // NEW — Refresh cookie too
+  res.cookie('jwt', newToken, getCookieOptions());
+
   res.status(200).json({
     success: true,
     data: { token: newToken, refreshToken: newRefreshToken },
@@ -196,6 +222,9 @@ exports.forgotPassword = asyncHandler(async (req, res) => {
 exports.resetPassword = asyncHandler(async (req, res) => {
   const { email, otp, newPassword } = req.body;
 
+  // NEW — Validate new password strength
+  validatePasswordStrength(newPassword);
+
   const user = await User.findOne({ email }).select('+otp.code +otp.expiresAt +otp.purpose +otp.attempts');
   if (!user) throw new AppError('User not found', 404);
 
@@ -212,6 +241,13 @@ exports.resetPassword = asyncHandler(async (req, res) => {
 // ─── Logout ───────────────────────────────────────────────────────────────────
 exports.logout = asyncHandler(async (req, res) => {
   await User.findByIdAndUpdate(req.user.id, { $unset: { refreshToken: 1 } });
+
+  // NEW — Clear the JWT cookie
+  res.cookie('jwt', 'loggedout', {
+    expires: new Date(Date.now() + 1000), // expires in 1 second
+    httpOnly: true,
+  });
+
   res.status(200).json({ success: true, message: 'Logged out successfully' });
 });
 
@@ -224,6 +260,10 @@ exports.getMe = asyncHandler(async (req, res) => {
 // ─── Change Password ──────────────────────────────────────────────────────────
 exports.changePassword = asyncHandler(async (req, res) => {
   const { currentPassword, newPassword } = req.body;
+
+  // NEW — Validate new password strength
+  validatePasswordStrength(newPassword);
+
   const user = await User.findById(req.user.id).select('+password');
 
   if (!(await user.comparePassword(currentPassword))) {
@@ -232,6 +272,10 @@ exports.changePassword = asyncHandler(async (req, res) => {
 
   user.password = newPassword;
   await user.save();
+
+  // NEW — Refresh cookie after password change
+  const token = signToken(user._id, user.role);
+  res.cookie('jwt', token, getCookieOptions());
 
   res.status(200).json({ success: true, message: 'Password changed successfully' });
 });

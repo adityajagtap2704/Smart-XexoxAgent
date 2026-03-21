@@ -5,7 +5,12 @@ const { AppError, asyncHandler } = require('../utils/helpers');
 exports.protect = asyncHandler(async (req, res, next) => {
   let token;
 
-  if (req.headers.authorization?.startsWith('Bearer ')) {
+  // NEW — First try to read from HttpOnly cookie
+  if (req.cookies?.jwt && req.cookies.jwt !== 'loggedout') {
+    token = req.cookies.jwt;
+  }
+  // Fallback — read from Authorization header (for mobile apps / API clients)
+  else if (req.headers.authorization?.startsWith('Bearer ')) {
     token = req.headers.authorization.split(' ')[1];
   }
 
@@ -34,9 +39,14 @@ exports.restrictTo = (...roles) => (req, res, next) => {
 
 exports.optionalAuth = asyncHandler(async (req, res, next) => {
   let token;
-  if (req.headers.authorization?.startsWith('Bearer ')) {
+
+  // NEW — Also check cookie for optional auth
+  if (req.cookies?.jwt && req.cookies.jwt !== 'loggedout') {
+    token = req.cookies.jwt;
+  } else if (req.headers.authorization?.startsWith('Bearer ')) {
     token = req.headers.authorization.split(' ')[1];
   }
+
   if (token) {
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);

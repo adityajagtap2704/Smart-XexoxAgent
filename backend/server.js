@@ -11,6 +11,9 @@ const compression = require('compression');
 const mongoSanitize = require('express-mongo-sanitize');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
+const xss = require('xss-clean');           // NEW — XSS protection
+const hpp = require('hpp');                  // NEW — HTTP parameter pollution
+const cookieParser = require('cookie-parser'); // NEW — read cookies
 require('dotenv').config();
 
 const { initSocket } = require('./config/socket');
@@ -39,10 +42,22 @@ app.set('io', io);
 // ─── Security Middleware ──────────────────────────────────────────────────────
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "https://checkout.razorpay.com"],
+      frameSrc: ["'self'", "https://api.razorpay.com"],
+      connectSrc: ["'self'", "https://api.razorpay.com"],
+      imgSrc: ["'self'", "data:", "https:"],
+    },
+  },
 }));
 
-app.use(mongoSanitize());
+app.use(mongoSanitize());   // Prevent MongoDB injection
+app.use(xss());             // NEW — Prevent XSS attacks
+app.use(hpp());             // NEW — Prevent HTTP parameter pollution
 app.use(compression());
+app.use(cookieParser());    // NEW — Parse cookies
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 const allowedOrigins = [
@@ -62,25 +77,52 @@ app.use(cors({
 }));
 
 // ─── Rate Limiting ────────────────────────────────────────────────────────────
+// Global limiter
 const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: 15 * 60 * 1000,  // 15 minutes
   max: 200,
   message: { success: false, message: 'Too many requests, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
+// Auth routes — strict
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
   message: { success: false, message: 'Too many auth attempts, please try again later.' },
 });
 
+// OTP requests — very strict
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { success: false, message: 'Too many OTP requests. Try again in 15 minutes.' },
+});
+
+// Upload — prevent abuse
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,  // 1 hour
+  max: 20,
+  message: { success: false, message: 'Upload limit reached. Try again in an hour.' },
+});
+
+// Order creation — prevent spam
+const orderLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: { success: false, message: 'Too many orders placed. Try again in an hour.' },
+});
+
 app.use('/api', globalLimiter);
 app.use('/api/auth', authLimiter);
+app.use('/api/auth/send-otp', otpLimiter);
+app.use('/api/auth/verify-otp', otpLimiter);
+app.use('/api/upload', uploadLimiter);
+app.use('/api/orders', orderLimiter);
 
 // ─── Body Parsing ─────────────────────────────────────────────────────────────
-// Razorpay webhook needs raw body
+// Razorpay webhook needs raw body — must be BEFORE express.json()
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -135,7 +177,6 @@ const startServer = async () => {
       logger.info(`🚀 Server running on port ${PORT} in ${process.env.NODE_ENV} mode`);
     });
 
-    // Start background jobs
     startCronJobs();
     logger.info('⏰ Cron jobs started');
 
