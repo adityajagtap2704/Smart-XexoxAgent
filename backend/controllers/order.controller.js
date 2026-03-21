@@ -3,6 +3,7 @@ const Shop = require('../models/Shop');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
 const { AppError, asyncHandler } = require('../utils/helpers');
+const { deleteFile } = require('../config/aws');
 const { createRazorpayOrder } = require('../config/razorpay');
 const { generateQRCode } = require('../utils/qrcode');
 const { emitToUser, emitToShop, emitToAdmin } = require('../config/socket');
@@ -214,6 +215,17 @@ exports.rejectOrder = asyncHandler(async (req, res) => {
   order.addStatusHistory('rejected', reason || 'Rejected by shopkeeper', req.user.id);
   order.rejectionReason = reason;
   await order.save();
+  // Delete S3 files immediately on rejection
+  for (const doc of order.documents) {
+    if (doc.s3Key) {
+      try {
+        await deleteFile(doc.s3Key);
+        logger.info(`S3 file deleted after rejection: ${doc.s3Key}`);
+      } catch (err) {
+        logger.warn(`Failed to delete S3 file ${doc.s3Key}: ${err.message}`);
+      }
+    }
+  }
 
   await createNotification({
     recipient: order.user._id,
@@ -319,6 +331,17 @@ exports.verifyPickup = asyncHandler(async (req, res) => {
   order.pickup.verifiedAt = new Date();
   order.pickup.verifiedBy = req.user.id;
   await order.save();
+  // Delete S3 files immediately after pickup
+  for (const doc of order.documents) {
+    if (doc.s3Key) {
+      try {
+        await deleteFile(doc.s3Key);
+        logger.info(`S3 file deleted after pickup: ${doc.s3Key}`);
+      } catch (err) {
+        logger.warn(`Failed to delete S3 file ${doc.s3Key}: ${err.message}`);
+      }
+    }
+  }
 
   // Update shop and user stats
   await Shop.findByIdAndUpdate(order.shop._id, {

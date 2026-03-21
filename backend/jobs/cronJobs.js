@@ -69,6 +69,16 @@ const expireOrders = cron.schedule('*/15 * * * *', async () => {
         timestamp: now,
       });
       await order.save();
+      // Delete S3 files immediately on expiry
+      for (const doc of order.documents) {
+        if (doc.s3Key) {
+          try {
+            await deleteFile(doc.s3Key);
+          } catch (err) {
+            logger.warn(`Failed to delete S3 file ${doc.s3Key}: ${err.message}`);
+          }
+        }
+      }
 
       // Notify user
       await createNotification({
