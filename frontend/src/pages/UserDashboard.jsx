@@ -101,19 +101,19 @@ const UserDashboard = () => {
       setUploadStep('Creating order...');
       const orderRes = await orderAPI.create({
         shopId: DEFAULT_SHOP_ID,
-        documents: [{
-          fileUrl:       doc.s3Url,
-          fileKey:       doc.s3Key,
-          fileName:      file.name,
-          fileSize:      file.size,
-          detectedPages: doc.detectedPages || 1,
-          printingOptions: {
-            copies,
-            colorMode: colorType,
-            sides:     doubleSided ? 'double' : 'single',
-            paperSize,
-          },
-        }],
+           documents: [{
+              s3Url:         doc.s3Url,
+              s3Key:         doc.s3Key,
+              originalName:  file.name,
+              fileSize:      file.size,
+              detectedPages: doc.detectedPages || 0,
+              printingOptions: {
+                copies,
+                colorMode: colorType,
+                sides:     doubleSided ? 'double' : 'single',
+                paperSize,
+              },
+            }],
       });
 
       const { order, razorpay } = orderRes.data.data;
