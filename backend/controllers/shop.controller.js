@@ -103,8 +103,22 @@ exports.updateShop = asyncHandler(async (req, res) => {
 
 // ─── Get Shop Dashboard Stats ─────────────────────────────────────────────────
 exports.getShopDashboard = asyncHandler(async (req, res) => {
-  const shop = await Shop.findOne({ owner: req.user.id });
-  if (!shop) throw new AppError('Shop not found', 404);
+  let shop = await Shop.findOne({ owner: req.user.id });
+
+  // Auto-link: if shopkeeper has no shop linked, find and link one automatically
+  if (!shop) {
+    const unownedShop = await Shop.findOne({ $or: [{ owner: null }, { owner: { $exists: false } }] });
+    const namedShop = !unownedShop ? await Shop.findOne({ name: /AISSMS/i }) : null;
+    shop = unownedShop || namedShop;
+
+    if (shop) {
+      shop.owner = req.user.id;
+      await shop.save({ validateBeforeSave: false });
+      await User.findByIdAndUpdate(req.user.id, { shop: shop._id });
+    } else {
+      throw new AppError('No shop assigned to your account. Contact admin.', 404);
+    }
+  }
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -170,7 +184,22 @@ exports.getShopReviews = asyncHandler(async (req, res) => {
 
 // ─── Get My Shop (simple object, for ShopDashboard header) ──────────────────
 exports.getMyShop = asyncHandler(async (req, res) => {
-  const shop = await Shop.findOne({ owner: req.user.id });
-  if (!shop) throw new AppError('Shop not found for this account', 404);
+  let shop = await Shop.findOne({ owner: req.user.id });
+
+  // Auto-link if not found
+  if (!shop) {
+    const unownedShop = await Shop.findOne({ $or: [{ owner: null }, { owner: { $exists: false } }] });
+    const namedShop = !unownedShop ? await Shop.findOne({ name: /AISSMS/i }) : null;
+    shop = unownedShop || namedShop;
+
+    if (shop) {
+      shop.owner = req.user.id;
+      await shop.save({ validateBeforeSave: false });
+      await User.findByIdAndUpdate(req.user.id, { shop: shop._id });
+    } else {
+      throw new AppError('No shop assigned to your account. Contact admin.', 404);
+    }
+  }
+
   res.status(200).json({ success: true, data: { shop } });
 });

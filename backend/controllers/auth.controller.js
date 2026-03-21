@@ -5,7 +5,6 @@ const Shop = require('../models/Shop');
 const { sendEmail } = require('../utils/email');
 const { AppError, asyncHandler } = require('../utils/helpers');
 const logger = require('../config/logger');
-const logger = require('../config/logger');
 
 // ─── Token Helpers ────────────────────────────────────────────────────────────
 const signToken = (id, role) =>
