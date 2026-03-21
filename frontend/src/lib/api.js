@@ -28,7 +28,8 @@ api.interceptors.response.use(
 // Auth
 export const authAPI = {
   register:       (data)  => api.post('/auth/register', data),
-  verifyEmail:    (data)  => api.post('/auth/verify-email', data), // NEW — OTP verification after register
+  verifyEmail:    (data)  => api.post('/auth/verify-email', data), // Step 2 of registration
+  resendOTP:      (email) => api.post('/auth/resend-otp', { email }),   // NEW — resend registration OTP
   login:          (data)  => api.post('/auth/login', data),
   verifyOTP:      (data)  => api.post('/auth/verify-otp', data),
   getMe:          ()      => api.get('/auth/me'),
@@ -36,6 +37,16 @@ export const authAPI = {
   forgotPassword: (email) => api.post('/auth/forgot-password', { email }),
   resetPassword:  (data)  => api.post('/auth/reset-password', data),
   logout:         ()      => api.post('/auth/logout'),
+};
+
+// User Profile
+export const userAPI = {
+  getProfile:          ()           => api.get('/users/profile'),
+  updateProfile:       (data)       => api.patch('/users/profile', data),
+  requestContactChange:(data)       => api.post('/users/request-change', data),  // Step 1 — send OTP
+  verifyContactChange: (data)       => api.post('/users/verify-change', data),   // Step 2 — verify OTP
+  getStats:            ()           => api.get('/users/stats'),
+  getOrderHistory:     ()           => api.get('/users/orders'),
 };
 
 // Orders
@@ -98,16 +109,16 @@ export const notificationAPI = {
 
 // Admin
 export const adminAPI = {
-  getDashboard: ()         => api.get('/admin/dashboard'),
-  getAnalytics: ()         => api.get('/admin/analytics'),
-  getRevenue:   ()         => api.get('/admin/revenue'),
-  getUsers:     ()         => api.get('/admin/users'),
-  toggleUser:   (id)       => api.patch(`/admin/users/${id}/toggle-status`),
-  getShops:     ()         => api.get('/admin/shops'),
-  verifyShop:   (id, data) => api.patch(`/admin/shops/${id}/verify`, data),
-  setMargin:    (id, data) => api.patch(`/admin/shops/${id}/margin`, data),
-  getOrders:    ()         => api.get('/admin/orders'),
-  broadcast:    (data)     => api.post('/admin/notifications/broadcast', data),
+  getDashboard: ()           => api.get('/admin/dashboard'),
+  getAnalytics: ()           => api.get('/admin/analytics'),
+  getRevenue:   (params)     => api.get(`/admin/revenue${params ? '?' + params : ''}`),
+  getUsers:     (params)     => api.get(`/admin/users${params ? '?' + params : ''}`),
+  toggleUser:   (id)         => api.patch(`/admin/users/${id}/toggle-status`),
+  getShops:     (params)     => api.get(`/admin/shops${params ? '?' + params : ''}`),
+  verifyShop:   (id, data)   => api.patch(`/admin/shops/${id}/verify`, data),
+  setMargin:    (id, data)   => api.patch(`/admin/shops/${id}/margin`, data),
+  getOrders:    (params)     => api.get(`/admin/orders${params ? '?' + params : ''}`),
+  broadcast:    (data)       => api.post('/admin/notifications/broadcast', data),
 };
 
 export default api;

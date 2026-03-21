@@ -1,25 +1,120 @@
 import { useState, useEffect, useCallback } from 'react';
-import { adminAPI } from '@/lib/api';
+import { adminAPI, paymentAPI } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { motion } from 'framer-motion';
-import { Users, Store, Package, DollarSign } from 'lucide-react';
+import {
+  Users, Store, Package, DollarSign, TrendingUp,
+  Bell, Search, X, RefreshCw, CheckCircle, XCircle,
+  BarChart2, AlertCircle
+} from 'lucide-react';
 import Navbar from '@/components/layout/Navbar';
 import Footer from '@/components/layout/Footer';
 
-const AdminDashboard = () => {
-  const [stats, setStats]       = useState({});
-  const [recentOrders, setRecentOrders] = useState([]);
-  const [users, setUsers]       = useState([]);
-  const [shops, setShops]       = useState([]);
-  const [orders, setOrders]     = useState([]);
-  const [activeTab, setActiveTab] = useState('overview');
-  const [margin, setMargin]     = useState('');
-  const [selectedShopId, setSelectedShopId] = useState('');
-  const [loading, setLoading]   = useState(true);
+// ── Status colors ─────────────────────────────────────────────────────────────
+const statusColors = {
+  pending_payment: 'bg-yellow-100 text-yellow-800',
+  paid:            'bg-blue-100 text-blue-800',
+  accepted:        'bg-indigo-100 text-indigo-800',
+  printing:        'bg-purple-100 text-purple-800',
+  ready:           'bg-green-100 text-green-800',
+  picked_up:       'bg-gray-100 text-gray-600',
+  cancelled:       'bg-red-100 text-red-700',
+  rejected:        'bg-red-100 text-red-700',
+  expired:         'bg-orange-100 text-orange-700',
+};
 
+// ── Simple bar chart component ────────────────────────────────────────────────
+const SimpleBarChart = ({ data, valueKey, labelKey, color = '#f97316' }) => {
+  if (!data || data.length === 0) return <p className="text-sm text-muted-foreground text-center py-8">No data available</p>;
+  const max = Math.max(...data.map(d => d[valueKey] || 0));
+  return (
+    <div className="space-y-2">
+      {data.slice(-14).map((d, i) => (
+        <div key={i} className="flex items-center gap-3 text-xs">
+          <span className="w-20 text-right text-muted-foreground shrink-0">{d[labelKey]}</span>
+          <div className="flex-1 bg-secondary rounded-full h-5 overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all"
+              style={{ width: `${max > 0 ? (d[valueKey] / max) * 100 : 0}%`, background: color }}
+            />
+          </div>
+          <span className="w-10 font-medium">{d[valueKey]}</span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ── Donut chart for order status ──────────────────────────────────────────────
+const StatusDonut = ({ data }) => {
+  if (!data || data.length === 0) return <p className="text-sm text-muted-foreground text-center py-8">No data</p>;
+  const colors = ['#f97316','#3b82f6','#8b5cf6','#10b981','#ef4444','#f59e0b','#6b7280'];
+  const total = data.reduce((s, d) => s + d.count, 0);
+  return (
+    <div className="flex flex-col gap-2">
+      {data.map((d, i) => (
+        <div key={d._id} className="flex items-center gap-3 text-xs">
+          <span className="w-3 h-3 rounded-full shrink-0" style={{ background: colors[i % colors.length] }} />
+          <span className="flex-1 capitalize text-muted-foreground">{d._id?.replace('_', ' ')}</span>
+          <span className="font-semibold">{d.count}</span>
+          <span className="text-muted-foreground w-10 text-right">{total > 0 ? Math.round(d.count / total * 100) : 0}%</span>
+        </div>
+      ))}
+      <div className="border-t border-border pt-2 flex justify-between text-xs font-semibold mt-1">
+        <span>Total</span><span>{total}</span>
+      </div>
+    </div>
+  );
+};
+
+// ── Main Component ────────────────────────────────────────────────────────────
+const AdminDashboard = () => {
+  // Core data
+  const [stats, setStats]             = useState({});
+  const [recentOrders, setRecentOrders] = useState([]);
+  const [users, setUsers]             = useState([]);
+  const [shops, setShops]             = useState([]);
+  const [orders, setOrders]           = useState([]);
+  const [analytics, setAnalytics]     = useState(null);
+  const [revenue, setRevenue]         = useState(null);
+  const [loading, setLoading]         = useState(true);
+
+  // UI state
+  const [activeTab, setActiveTab]     = useState('overview');
+
+  // Users tab
+  const [userSearch, setUserSearch]   = useState('');
+  const [userRole, setUserRole]       = useState('');
+
+  // Orders tab
+  const [orderStatus, setOrderStatus] = useState('');
+  const [orderFrom, setOrderFrom]     = useState('');
+  const [orderTo, setOrderTo]         = useState('');
+
+  // Shops tab
+  const [rejectModal, setRejectModal] = useState(null); // { id, name }
+  const [rejectReason, setRejectReason] = useState('');
+
+  // Revenue tab
+  const [revenueGroup, setRevenueGroup] = useState('day');
+
+  // Settings tab
+  const [margin, setMargin]           = useState('');
+  const [selectedShopId, setSelectedShopId] = useState('');
+
+  // Broadcast tab
+  const [broadcastTitle, setBroadcastTitle]   = useState('');
+  const [broadcastMsg, setBroadcastMsg]       = useState('');
+  const [broadcastRole, setBroadcastRole]     = useState('');
+  const [broadcasting, setBroadcasting]       = useState(false);
+
+  // Refund modal
+  const [refundModal, setRefundModal] = useState(null); // order object
+
+  // ── Fetch core data ──────────────────────────────────────────────────────────
   const fetchData = useCallback(async () => {
     try {
       const [dashRes, usersRes, shopsRes, ordersRes] = await Promise.all([
@@ -28,42 +123,88 @@ const AdminDashboard = () => {
         adminAPI.getShops().catch(() => ({ data: {} })),
         adminAPI.getOrders().catch(() => ({ data: {} })),
       ]);
-
-      // Dashboard — backend returns: { data: { stats, recentOrders } }
-      const dashData = dashRes.data?.data || dashRes.data || {};
+      const dashData = dashRes.data?.data || {};
       setStats(dashData.stats || {});
       setRecentOrders(Array.isArray(dashData.recentOrders) ? dashData.recentOrders : []);
-
-      // Users — backend returns: { data: { users, pagination } }
-      const usersData = usersRes.data?.data || usersRes.data || {};
-      setUsers(Array.isArray(usersData.users) ? usersData.users : []);
-
-      // Shops — backend returns: { data: { shops, pagination } }
-      const shopsData = shopsRes.data?.data || shopsRes.data || {};
-      setShops(Array.isArray(shopsData.shops) ? shopsData.shops : []);
-
-      // Orders — backend returns: { data: { orders, pagination } }
-      const ordersData = ordersRes.data?.data || ordersRes.data || {};
-      setOrders(Array.isArray(ordersData.orders) ? ordersData.orders : []);
-
-    } catch (err) {
-      console.error('Admin fetch error:', err);
-    }
+      const ud = usersRes.data?.data || {};
+      setUsers(Array.isArray(ud.users) ? ud.users : []);
+      const sd = shopsRes.data?.data || {};
+      setShops(Array.isArray(sd.shops) ? sd.shops : []);
+      const od = ordersRes.data?.data || {};
+      setOrders(Array.isArray(od.orders) ? od.orders : []);
+    } catch (err) { console.error('Admin fetch error:', err); }
     setLoading(false);
   }, []);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  // ── Fetch analytics ──────────────────────────────────────────────────────────
+  const fetchAnalytics = useCallback(async () => {
+    try {
+      const res = await adminAPI.getAnalytics();
+      setAnalytics(res.data?.data || null);
+    } catch { /* silent */ }
+  }, []);
 
-  // Approve / verify shop — backend uses verifyShop(id, data)
+  // ── Fetch revenue ────────────────────────────────────────────────────────────
+  const fetchRevenue = useCallback(async () => {
+    try {
+      const res = await adminAPI.getRevenue();
+      setRevenue(res.data?.data || null);
+    } catch { /* silent */ }
+  }, []);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => {
+    if (activeTab === 'analytics') fetchAnalytics();
+    if (activeTab === 'revenue') fetchRevenue();
+  }, [activeTab, fetchAnalytics, fetchRevenue]);
+
+  // ── Search users ─────────────────────────────────────────────────────────────
+  const handleSearchUsers = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (userSearch) params.set('search', userSearch);
+      if (userRole) params.set('role', userRole);
+      const res = await adminAPI.getUsers(params.toString());
+      const ud = res.data?.data || {};
+      setUsers(Array.isArray(ud.users) ? ud.users : []);
+    } catch { toast.error('Search failed'); }
+  };
+
+  // ── Filter orders ─────────────────────────────────────────────────────────────
+  const handleFilterOrders = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (orderStatus) params.set('status', orderStatus);
+      if (orderFrom)   params.set('from', orderFrom);
+      if (orderTo)     params.set('to', orderTo);
+      const res = await adminAPI.getOrders(params.toString());
+      const od = res.data?.data || {};
+      setOrders(Array.isArray(od.orders) ? od.orders : []);
+    } catch { toast.error('Filter failed'); }
+  };
+
+  // ── Approve shop ─────────────────────────────────────────────────────────────
   const handleApproveShop = async (id) => {
     try {
-      await adminAPI.verifyShop(id, { isVerified: true, isActive: true });
-      toast.success('Shop approved');
+      await adminAPI.verifyShop(id, { approve: true });
+      toast.success('Shop approved ✅');
       fetchData();
     } catch { toast.error('Failed to approve shop'); }
   };
 
-  // Toggle user active status — backend uses toggleUser(id)
+  // ── Reject shop ──────────────────────────────────────────────────────────────
+  const handleRejectShop = async () => {
+    if (!rejectReason.trim()) { toast.error('Please enter a reason'); return; }
+    try {
+      await adminAPI.verifyShop(rejectModal.id, { approve: false, reason: rejectReason });
+      toast.success('Shop rejected');
+      setRejectModal(null);
+      setRejectReason('');
+      fetchData();
+    } catch { toast.error('Failed to reject shop'); }
+  };
+
+  // ── Block / unblock user ──────────────────────────────────────────────────────
   const handleBlockUser = async (id) => {
     try {
       await adminAPI.toggleUser(id);
@@ -72,26 +213,63 @@ const AdminDashboard = () => {
     } catch { toast.error('Failed to update user'); }
   };
 
-  // Update platform margin — backend uses setMargin(shopId, data)
+  // ── Set margin ────────────────────────────────────────────────────────────────
   const handleMargin = async () => {
-    if (!selectedShopId) {
-      toast.error('Please select a shop first');
-      return;
-    }
+    if (!selectedShopId) { toast.error('Select a shop first'); return; }
     try {
-      await adminAPI.setMargin(selectedShopId, { marginPercentage: Number(margin) });
-      toast.success('Margin updated');
+      await adminAPI.setMargin(selectedShopId, { margin: Number(margin) });
+      toast.success('Margin updated ✅');
     } catch { toast.error('Failed to update margin'); }
   };
 
+  // ── Broadcast ─────────────────────────────────────────────────────────────────
+  const handleBroadcast = async () => {
+    if (!broadcastTitle || !broadcastMsg) { toast.error('Fill in title and message'); return; }
+    setBroadcasting(true);
+    try {
+      const res = await adminAPI.broadcast({ title: broadcastTitle, message: broadcastMsg, targetRole: broadcastRole || undefined });
+      toast.success(`Sent to ${res.data?.data?.sentTo || '?'} users ✅`);
+      setBroadcastTitle(''); setBroadcastMsg(''); setBroadcastRole('');
+    } catch { toast.error('Broadcast failed'); }
+    setBroadcasting(false);
+  };
+
+  // ── Refund ────────────────────────────────────────────────────────────────────
+  const handleRefund = async () => {
+    try {
+      await paymentAPI.refund({ orderId: refundModal._id, reason: 'Admin initiated refund' });
+      toast.success('Refund initiated ✅');
+      setRefundModal(null);
+      fetchData();
+    } catch (err) { toast.error(err.response?.data?.message || 'Refund failed'); }
+  };
+
+  // ── Fetch revenue with groupBy ────────────────────────────────────────────────
+  useEffect(() => {
+    if (activeTab === 'revenue') {
+      adminAPI.getRevenue(`groupBy=${revenueGroup}`).then(res => {
+        setRevenue(res.data?.data || null);
+      }).catch(() => {});
+    }
+  }, [revenueGroup, activeTab]);
+
   const statCards = [
-    { icon: Users,       label: 'Total Users',   value: stats.totalUsers   || 0,   color: 'text-blue-500'   },
-    { icon: Store,       label: 'Total Shops',   value: stats.totalShops   || 0,   color: 'text-green-500'  },
-    { icon: Package,     label: 'Total Orders',  value: stats.totalOrders  || 0,   color: 'text-primary'    },
-    { icon: DollarSign,  label: 'Revenue (MTD)', value: `₹${stats.monthPlatformRevenue || 0}`, color: 'text-orange-500' },
+    { icon: Users,      label: 'Total Users',   value: stats.totalUsers   || 0,  color: 'text-blue-500'   },
+    { icon: Store,      label: 'Total Shops',   value: stats.totalShops   || 0,  color: 'text-green-500'  },
+    { icon: Package,    label: 'Total Orders',  value: stats.totalOrders  || 0,  color: 'text-primary'    },
+    { icon: DollarSign, label: 'Revenue (MTD)', value: `₹${stats.monthPlatformRevenue || 0}`, color: 'text-orange-500' },
   ];
 
-  const tabs = ['overview', 'users', 'shops', 'orders', 'settings'];
+  const tabs = [
+    { id: 'overview',   label: '📊 Overview'   },
+    { id: 'analytics',  label: '📈 Analytics'  },
+    { id: 'revenue',    label: '💰 Revenue'    },
+    { id: 'users',      label: '👥 Users'      },
+    { id: 'shops',      label: '🏪 Shops'      },
+    { id: 'orders',     label: '📦 Orders'     },
+    { id: 'broadcast',  label: '📢 Broadcast'  },
+    { id: 'settings',   label: '⚙️ Settings'   },
+  ];
 
   return (
     <div className="min-h-screen bg-background">
@@ -99,20 +277,20 @@ const AdminDashboard = () => {
       <div className="container mx-auto px-4 py-8">
         <div className="mb-8">
           <h1 className="font-heading text-3xl font-bold">Admin Panel 🔐</h1>
-          <p className="text-muted-foreground">Platform management &amp; analytics</p>
+          <p className="text-muted-foreground">Platform management, analytics & controls</p>
         </div>
 
         {/* Tabs */}
         <div className="mb-6 flex flex-wrap gap-2">
           {tabs.map((t) => (
-            <button key={t} onClick={() => setActiveTab(t)}
-              className={`rounded-xl px-4 py-2 text-sm font-medium capitalize transition-all ${activeTab === t ? 'sunrise-gradient text-primary-foreground sunrise-shadow-sm' : 'bg-secondary text-secondary-foreground'}`}>
-              {t}
+            <button key={t.id} onClick={() => setActiveTab(t.id)}
+              className={`rounded-xl px-4 py-2 text-sm font-medium transition-all ${activeTab === t.id ? 'sunrise-gradient text-primary-foreground sunrise-shadow-sm' : 'bg-secondary text-secondary-foreground'}`}>
+              {t.label}
             </button>
           ))}
         </div>
 
-        {/* ── Overview ── */}
+        {/* ── OVERVIEW ── */}
         {activeTab === 'overview' && (
           <div className="space-y-6">
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -131,34 +309,11 @@ const AdminDashboard = () => {
               ))}
             </div>
 
-            {/* Recent Orders */}
-            <div className="glass-card p-5">
-              <h3 className="font-heading font-semibold mb-4">Recent Orders</h3>
-              {loading ? (
-                <p className="text-sm text-muted-foreground">Loading...</p>
-              ) : recentOrders.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No orders yet</p>
-              ) : (
-                <div className="space-y-3">
-                  {recentOrders.slice(0, 5).map((o) => (
-                    <div key={o._id} className="flex items-center justify-between rounded-lg bg-secondary/50 p-3 text-sm">
-                      <span className="font-mono text-xs">#{o._id?.slice(-6).toUpperCase()} — {o.user?.name || 'User'}</span>
-                      <div className="flex items-center gap-2">
-                        <span className="rounded-full bg-secondary px-2 py-0.5 text-xs">{o.status}</span>
-                        <span className="font-medium text-primary">₹{o.pricing?.total || 0}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Extra stats */}
             <div className="grid gap-4 sm:grid-cols-3">
               {[
-                { label: 'Active Orders',       value: stats.activeOrders       || 0 },
-                { label: "Today's Orders",      value: stats.todayOrders        || 0 },
-                { label: 'Pending Verification',value: stats.pendingVerification|| 0 },
+                { label: 'Active Orders',        value: stats.activeOrders        || 0 },
+                { label: "Today's Orders",       value: stats.todayOrders         || 0 },
+                { label: 'Pending Verification', value: stats.pendingVerification || 0 },
               ].map((s) => (
                 <div key={s.label} className="glass-card p-4 text-center">
                   <p className="text-2xl font-heading font-bold text-primary">{s.value}</p>
@@ -166,157 +321,482 @@ const AdminDashboard = () => {
                 </div>
               ))}
             </div>
+
+            <div className="glass-card p-5">
+              <h3 className="font-heading font-semibold mb-4">Recent Orders (Last 10)</h3>
+              {loading ? <p className="text-sm text-muted-foreground">Loading...</p> :
+               recentOrders.length === 0 ? <p className="text-sm text-muted-foreground">No orders yet</p> : (
+                <div className="space-y-2">
+                  {recentOrders.map((o) => (
+                    <div key={o._id} className="flex items-center justify-between rounded-lg bg-secondary/50 p-3 text-sm">
+                      <div>
+                        <span className="font-mono text-xs font-semibold">#{o._id?.slice(-6).toUpperCase()}</span>
+                        <span className="text-muted-foreground ml-2">{o.user?.name || 'User'}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`rounded-full px-2 py-0.5 text-xs ${statusColors[o.status] || 'bg-muted text-muted-foreground'}`}>{o.status}</span>
+                        <span className="font-medium text-primary text-xs">₹{o.pricing?.total || 0}</span>
+                        <span className="text-xs text-muted-foreground">{new Date(o.createdAt).toLocaleDateString('en-IN')}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
-        {/* ── Users ── */}
+        {/* ── ANALYTICS ── */}
+        {activeTab === 'analytics' && (
+          <div className="space-y-6">
+            {!analytics ? (
+              <div className="glass-card p-8 text-center text-muted-foreground">Loading analytics...</div>
+            ) : (
+              <>
+                <div className="grid gap-6 lg:grid-cols-2">
+                  {/* Orders by status */}
+                  <div className="glass-card p-5">
+                    <h3 className="font-heading font-semibold mb-4 flex items-center gap-2">
+                      <BarChart2 className="h-4 w-4 text-primary" /> Orders by Status
+                    </h3>
+                    <StatusDonut data={analytics.ordersByStatus} />
+                  </div>
+
+                  {/* Top shops */}
+                  <div className="glass-card p-5">
+                    <h3 className="font-heading font-semibold mb-4 flex items-center gap-2">
+                      <Store className="h-4 w-4 text-green-500" /> Top Shops by Orders
+                    </h3>
+                    <div className="space-y-3">
+                      {(analytics.topShops || []).map((s, i) => (
+                        <div key={s._id} className="flex items-center gap-3 text-sm">
+                          <span className="w-6 h-6 rounded-full bg-primary/10 text-primary text-xs flex items-center justify-center font-bold">{i + 1}</span>
+                          <div className="flex-1">
+                            <p className="font-medium">{s.name}</p>
+                            <p className="text-xs text-muted-foreground">₹{s.totalRevenue || 0} revenue · ⭐ {s.rating || 0}</p>
+                          </div>
+                          <span className="font-bold text-primary">{s.totalOrders || 0} orders</span>
+                        </div>
+                      ))}
+                      {(!analytics.topShops || analytics.topShops.length === 0) && (
+                        <p className="text-sm text-muted-foreground text-center py-4">No shop data yet</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Order trend - last 30 days */}
+                <div className="glass-card p-5">
+                  <h3 className="font-heading font-semibold mb-4 flex items-center gap-2">
+                    <TrendingUp className="h-4 w-4 text-blue-500" /> Order Trend — Last 30 Days
+                  </h3>
+                  <SimpleBarChart
+                    data={analytics.orderTrend || []}
+                    valueKey="count"
+                    labelKey="_id"
+                    color="#3b82f6"
+                  />
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── REVENUE ── */}
+        {activeTab === 'revenue' && (
+          <div className="space-y-6">
+            {/* Group by selector */}
+            <div className="glass-card p-4 flex items-center gap-4">
+              <Label className="shrink-0">Group by:</Label>
+              <div className="flex gap-2">
+                {['day', 'week', 'month'].map((g) => (
+                  <button key={g} onClick={() => setRevenueGroup(g)}
+                    className={`rounded-lg px-4 py-1.5 text-sm font-medium capitalize transition-all ${revenueGroup === g ? 'sunrise-gradient text-primary-foreground' : 'bg-secondary text-secondary-foreground'}`}>
+                    {g}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Totals */}
+            {revenue?.totals && (
+              <div className="grid gap-4 sm:grid-cols-4">
+                {[
+                  { label: 'Total Revenue',    value: `₹${revenue.totals.totalRevenue    || 0}`, color: 'text-primary'       },
+                  { label: 'Platform Revenue', value: `₹${revenue.totals.platformRevenue || 0}`, color: 'text-orange-500'    },
+                  { label: 'Shop Revenue',     value: `₹${revenue.totals.shopRevenue     || 0}`, color: 'text-green-500'     },
+                  { label: 'Total Orders',     value: revenue.totals.orderCount           || 0,  color: 'text-blue-500'      },
+                ].map((s) => (
+                  <div key={s.label} className="glass-card p-4 text-center">
+                    <p className={`font-heading text-xl font-bold ${s.color}`}>{s.value}</p>
+                    <p className="text-xs text-muted-foreground mt-1">{s.label}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Revenue chart */}
+            <div className="glass-card p-5">
+              <h3 className="font-heading font-semibold mb-4 flex items-center gap-2">
+                <DollarSign className="h-4 w-4 text-orange-500" /> Revenue by {revenueGroup}
+              </h3>
+              {!revenue ? (
+                <p className="text-sm text-muted-foreground text-center py-8">Loading...</p>
+              ) : (
+                <SimpleBarChart
+                  data={revenue.revenue || []}
+                  valueKey="totalRevenue"
+                  labelKey="_id"
+                  color="#f97316"
+                />
+              )}
+            </div>
+
+            {/* Platform vs Shop revenue */}
+            {revenue?.revenue && revenue.revenue.length > 0 && (
+              <div className="glass-card p-5">
+                <h3 className="font-heading font-semibold mb-4">Platform Revenue</h3>
+                <SimpleBarChart
+                  data={revenue.revenue}
+                  valueKey="platformRevenue"
+                  labelKey="_id"
+                  color="#8b5cf6"
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── USERS ── */}
         {activeTab === 'users' && (
-          <div className="glass-card overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border bg-secondary/50">
-                    <th className="px-4 py-3 text-left font-medium">Name</th>
-                    <th className="px-4 py-3 text-left font-medium">Email</th>
-                    <th className="px-4 py-3 text-left font-medium">Role</th>
-                    <th className="px-4 py-3 text-left font-medium">Status</th>
-                    <th className="px-4 py-3 text-left font-medium">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {users.length === 0 ? (
-                    <tr><td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">No users found</td></tr>
-                  ) : (
-                    users.map((u) => (
-                      <tr key={u._id} className="border-b border-border/50">
+          <div className="space-y-4">
+            {/* Search & filter */}
+            <div className="glass-card p-4 flex flex-wrap gap-3 items-end">
+              <div className="flex-1 min-w-48">
+                <Label className="text-xs">Search</Label>
+                <div className="relative mt-1">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                  <Input placeholder="Name, email or phone..." value={userSearch} onChange={e => setUserSearch(e.target.value)} className="pl-8 h-9 text-sm" onKeyDown={e => e.key === 'Enter' && handleSearchUsers()} />
+                </div>
+              </div>
+              <div>
+                <Label className="text-xs">Role</Label>
+                <select value={userRole} onChange={e => setUserRole(e.target.value)} className="mt-1 rounded-lg border border-border bg-background px-3 h-9 text-sm">
+                  <option value="">All roles</option>
+                  <option value="user">User</option>
+                  <option value="shopkeeper">Shopkeeper</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+              <Button onClick={handleSearchUsers} size="sm" className="sunrise-gradient text-primary-foreground">
+                <Search className="h-3.5 w-3.5 mr-1" /> Search
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => { setUserSearch(''); setUserRole(''); fetchData(); }}>
+                <RefreshCw className="h-3.5 w-3.5 mr-1" /> Reset
+              </Button>
+            </div>
+
+            <div className="glass-card overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-secondary/50">
+                      <th className="px-4 py-3 text-left font-medium">Name</th>
+                      <th className="px-4 py-3 text-left font-medium">Email</th>
+                      <th className="px-4 py-3 text-left font-medium">Phone</th>
+                      <th className="px-4 py-3 text-left font-medium">Role</th>
+                      <th className="px-4 py-3 text-left font-medium">Verified</th>
+                      <th className="px-4 py-3 text-left font-medium">Status</th>
+                      <th className="px-4 py-3 text-left font-medium">Joined</th>
+                      <th className="px-4 py-3 text-left font-medium">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {users.length === 0 ? (
+                      <tr><td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">No users found</td></tr>
+                    ) : users.map((u) => (
+                      <tr key={u._id} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
                         <td className="px-4 py-3 font-medium">{u.name}</td>
-                        <td className="px-4 py-3 text-muted-foreground">{u.email}</td>
+                        <td className="px-4 py-3 text-muted-foreground text-xs">{u.email}</td>
+                        <td className="px-4 py-3 text-muted-foreground text-xs">{u.phone}</td>
                         <td className="px-4 py-3">
-                          <span className="rounded-full bg-secondary px-2 py-0.5 text-xs capitalize">{u.role}</span>
+                          <span className={`rounded-full px-2 py-0.5 text-xs capitalize font-medium ${u.role === 'admin' ? 'bg-purple-100 text-purple-700' : u.role === 'shopkeeper' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700'}`}>
+                            {u.role}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          {u.isEmailVerified
+                            ? <span className="text-green-600 text-xs flex items-center gap-1"><CheckCircle className="h-3 w-3" /> Email</span>
+                            : <span className="text-red-500 text-xs flex items-center gap-1"><XCircle className="h-3 w-3" /> Unverified</span>}
                         </td>
                         <td className="px-4 py-3">
                           <span className={`rounded-full px-2 py-0.5 text-xs ${u.isActive ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                             {u.isActive ? 'Active' : 'Blocked'}
                           </span>
                         </td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{new Date(u.createdAt).toLocaleDateString('en-IN')}</td>
                         <td className="px-4 py-3">
-                          <Button variant="ghost" size="sm" onClick={() => handleBlockUser(u._id)}
-                            className={u.isActive ? 'text-destructive' : 'text-green-600'}>
-                            {u.isActive ? 'Block' : 'Unblock'}
-                          </Button>
+                          {u.role !== 'admin' && (
+                            <Button variant="ghost" size="sm" onClick={() => handleBlockUser(u._id)}
+                              className={u.isActive ? 'text-destructive text-xs' : 'text-green-600 text-xs'}>
+                              {u.isActive ? 'Block' : 'Unblock'}
+                            </Button>
+                          )}
                         </td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-xs text-muted-foreground p-3 border-t border-border">{users.length} users shown</p>
             </div>
           </div>
         )}
 
-        {/* ── Shops ── */}
+        {/* ── SHOPS ── */}
         {activeTab === 'shops' && (
           <div className="space-y-4">
             {shops.length === 0 ? (
               <div className="glass-card p-8 text-center text-muted-foreground">No shops found</div>
-            ) : (
-              shops.map((s) => (
-                <div key={s._id} className="glass-card p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <p className="font-medium">{s.name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {s.address?.street ? `${s.address.street}, ${s.address.city}` : 'No address'}
-                    </p>
+            ) : shops.map((s) => (
+              <div key={s._id} className="glass-card p-5">
+                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <p className="font-semibold">{s.name}</p>
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${s.isVerified ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                        {s.isVerified ? '✓ Verified' : '⏳ Pending'}
+                      </span>
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${s.isOpen ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>
+                        {s.isOpen ? 'Open' : 'Closed'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{s.address?.street}, {s.address?.city}, {s.address?.state}</p>
                     <p className="text-xs text-muted-foreground mt-0.5">{s.phone} · {s.email}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">Owner: {s.owner?.name || 'N/A'} · Rating: ⭐ {s.rating || 0} · Orders: {s.totalOrders || 0}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      B&W: ₹{s.pricing?.bw?.singleSided || 0}/page · Color: ₹{s.pricing?.color?.singleSided || 0}/page · Margin: {s.platformMargin || 0}%
+                    </p>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${s.isVerified ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
-                      {s.isVerified ? 'Verified' : 'Pending'}
-                    </span>
+                  <div className="flex gap-2 shrink-0">
                     {!s.isVerified && (
-                      <Button size="sm" className="sunrise-gradient text-primary-foreground" onClick={() => handleApproveShop(s._id)}>
-                        Approve
+                      <>
+                        <Button size="sm" className="sunrise-gradient text-primary-foreground" onClick={() => handleApproveShop(s._id)}>
+                          <CheckCircle className="h-3.5 w-3.5 mr-1" /> Approve
+                        </Button>
+                        <Button size="sm" variant="outline" className="text-destructive border-destructive" onClick={() => setRejectModal({ id: s._id, name: s.name })}>
+                          <XCircle className="h-3.5 w-3.5 mr-1" /> Reject
+                        </Button>
+                      </>
+                    )}
+                    {s.isVerified && (
+                      <Button size="sm" variant="outline" className="text-destructive border-destructive" onClick={() => setRejectModal({ id: s._id, name: s.name })}>
+                        Revoke
                       </Button>
                     )}
                   </div>
                 </div>
-              ))
+              </div>
+            ))}
+
+            {/* Reject modal */}
+            {rejectModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/50 backdrop-blur-sm p-4" onClick={() => setRejectModal(null)}>
+                <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
+                  className="glass-card p-6 max-w-md w-full" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="font-heading font-semibold flex items-center gap-2">
+                      <AlertCircle className="h-5 w-5 text-destructive" /> Reject / Revoke Shop
+                    </h3>
+                    <button onClick={() => setRejectModal(null)}><X className="h-4 w-4" /></button>
+                  </div>
+                  <p className="text-sm text-muted-foreground mb-4">Rejecting: <strong>{rejectModal.name}</strong></p>
+                  <div>
+                    <Label>Reason (required)</Label>
+                    <textarea
+                      value={rejectReason}
+                      onChange={e => setRejectReason(e.target.value)}
+                      placeholder="e.g. Documents incomplete, invalid address..."
+                      className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm min-h-[80px]"
+                    />
+                  </div>
+                  <div className="flex gap-2 mt-4">
+                    <Button className="flex-1 bg-destructive text-destructive-foreground" onClick={handleRejectShop}>Confirm Reject</Button>
+                    <Button variant="outline" onClick={() => setRejectModal(null)}>Cancel</Button>
+                  </div>
+                </motion.div>
+              </div>
             )}
           </div>
         )}
 
-        {/* ── Orders ── */}
+        {/* ── ORDERS ── */}
         {activeTab === 'orders' && (
-          <div className="glass-card overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border bg-secondary/50">
-                    <th className="px-4 py-3 text-left font-medium">ID</th>
-                    <th className="px-4 py-3 text-left font-medium">User</th>
-                    <th className="px-4 py-3 text-left font-medium">Shop</th>
-                    <th className="px-4 py-3 text-left font-medium">Status</th>
-                    <th className="px-4 py-3 text-left font-medium">Total</th>
-                    <th className="px-4 py-3 text-left font-medium">Date</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {orders.length === 0 ? (
-                    <tr><td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">No orders found</td></tr>
-                  ) : (
-                    orders.map((o) => (
-                      <tr key={o._id} className="border-b border-border/50">
-                        <td className="px-4 py-3 font-mono text-xs">#{o._id?.slice(-6).toUpperCase()}</td>
-                        <td className="px-4 py-3">{o.user?.name || '-'}</td>
-                        <td className="px-4 py-3">{o.shop?.name || '-'}</td>
-                        <td className="px-4 py-3">
-                          <span className="rounded-full bg-secondary px-2 py-0.5 text-xs capitalize">{o.status}</span>
-                        </td>
-                        <td className="px-4 py-3 font-medium">₹{o.pricing?.total || 0}</td>
-                        <td className="px-4 py-3 text-muted-foreground text-xs">
-                          {new Date(o.createdAt).toLocaleDateString('en-IN')}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* ── Settings ── */}
-        {activeTab === 'settings' && (
-          <div className="glass-card p-6 max-w-md">
-            <h3 className="font-heading text-xl font-semibold mb-4">Platform Settings</h3>
-            <div className="space-y-4">
+          <div className="space-y-4">
+            {/* Filter bar */}
+            <div className="glass-card p-4 flex flex-wrap gap-3 items-end">
               <div>
-                <Label>Select Shop</Label>
-                <select
-                  value={selectedShopId}
-                  onChange={(e) => setSelectedShopId(e.target.value)}
-                  className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                >
-                  <option value="">Choose a shop...</option>
-                  {shops.map((s) => (
-                    <option key={s._id} value={s._id}>{s.name}</option>
+                <Label className="text-xs">Status</Label>
+                <select value={orderStatus} onChange={e => setOrderStatus(e.target.value)} className="mt-1 rounded-lg border border-border bg-background px-3 h-9 text-sm">
+                  <option value="">All statuses</option>
+                  {['pending_payment','paid','accepted','printing','ready','picked_up','cancelled','rejected','expired'].map(s => (
+                    <option key={s} value={s}>{s.replace('_',' ')}</option>
                   ))}
                 </select>
               </div>
               <div>
-                <Label>Margin Percentage (%)</Label>
-                <Input
-                  type="number" min={0} max={100}
-                  value={margin}
-                  onChange={(e) => setMargin(e.target.value)}
-                  placeholder="e.g. 10"
-                  className="mt-1.5"
-                />
-                <p className="text-xs text-muted-foreground mt-1">Added on top of shop prices</p>
+                <Label className="text-xs">From Date</Label>
+                <Input type="date" value={orderFrom} onChange={e => setOrderFrom(e.target.value)} className="mt-1 h-9 text-sm" />
               </div>
-              <Button onClick={handleMargin} className="sunrise-gradient text-primary-foreground">
-                Update Margin
+              <div>
+                <Label className="text-xs">To Date</Label>
+                <Input type="date" value={orderTo} onChange={e => setOrderTo(e.target.value)} className="mt-1 h-9 text-sm" />
+              </div>
+              <Button onClick={handleFilterOrders} size="sm" className="sunrise-gradient text-primary-foreground">Apply Filter</Button>
+              <Button variant="outline" size="sm" onClick={() => { setOrderStatus(''); setOrderFrom(''); setOrderTo(''); fetchData(); }}>
+                <RefreshCw className="h-3.5 w-3.5 mr-1" /> Reset
               </Button>
+            </div>
+
+            <div className="glass-card overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-secondary/50">
+                      <th className="px-4 py-3 text-left font-medium">Order ID</th>
+                      <th className="px-4 py-3 text-left font-medium">User</th>
+                      <th className="px-4 py-3 text-left font-medium">Shop</th>
+                      <th className="px-4 py-3 text-left font-medium">Status</th>
+                      <th className="px-4 py-3 text-left font-medium">Total</th>
+                      <th className="px-4 py-3 text-left font-medium">Date</th>
+                      <th className="px-4 py-3 text-left font-medium">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orders.length === 0 ? (
+                      <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">No orders found</td></tr>
+                    ) : orders.map((o) => (
+                      <tr key={o._id} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
+                        <td className="px-4 py-3 font-mono text-xs font-semibold">#{o._id?.slice(-6).toUpperCase()}</td>
+                        <td className="px-4 py-3">
+                          <p className="font-medium text-xs">{o.user?.name || '-'}</p>
+                          <p className="text-muted-foreground text-xs">{o.user?.email}</p>
+                        </td>
+                        <td className="px-4 py-3 text-xs">{o.shop?.name || '-'}</td>
+                        <td className="px-4 py-3">
+                          <span className={`rounded-full px-2 py-0.5 text-xs ${statusColors[o.status] || 'bg-muted text-muted-foreground'}`}>
+                            {o.status?.replace('_',' ')}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 font-medium text-primary">₹{o.pricing?.total || 0}</td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{new Date(o.createdAt).toLocaleDateString('en-IN')}</td>
+                        <td className="px-4 py-3">
+                          {['rejected','cancelled','expired'].includes(o.status) && o.payment?.status === 'paid' && (
+                            <Button size="sm" variant="outline" className="text-xs text-blue-600 border-blue-200" onClick={() => setRefundModal(o)}>
+                              💸 Refund
+                            </Button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-xs text-muted-foreground p-3 border-t border-border">{orders.length} orders shown</p>
+            </div>
+
+            {/* Refund modal */}
+            {refundModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/50 backdrop-blur-sm p-4" onClick={() => setRefundModal(null)}>
+                <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
+                  className="glass-card p-6 max-w-sm w-full" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="font-heading font-semibold">Initiate Refund</h3>
+                    <button onClick={() => setRefundModal(null)}><X className="h-4 w-4" /></button>
+                  </div>
+                  <div className="space-y-2 text-sm mb-6">
+                    <div className="flex justify-between"><span className="text-muted-foreground">Order</span><span className="font-mono">#{refundModal._id?.slice(-6).toUpperCase()}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">User</span><span>{refundModal.user?.name}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Amount</span><span className="font-bold text-primary">₹{refundModal.pricing?.total}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Status</span><span>{refundModal.status}</span></div>
+                  </div>
+                  <p className="text-xs text-muted-foreground mb-4">This will initiate a Razorpay refund. Money will reflect in 5–7 business days.</p>
+                  <div className="flex gap-2">
+                    <Button className="flex-1 sunrise-gradient text-primary-foreground" onClick={handleRefund}>Confirm Refund</Button>
+                    <Button variant="outline" onClick={() => setRefundModal(null)}>Cancel</Button>
+                  </div>
+                </motion.div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── BROADCAST ── */}
+        {activeTab === 'broadcast' && (
+          <div className="max-w-xl space-y-4">
+            <div className="glass-card p-6">
+              <h3 className="font-heading text-lg font-semibold mb-1 flex items-center gap-2">
+                <Bell className="h-5 w-5 text-primary" /> Broadcast Notification
+              </h3>
+              <p className="text-xs text-muted-foreground mb-5">Send a notification to all users or a specific role.</p>
+
+              <div className="space-y-4">
+                <div>
+                  <Label>Target Audience</Label>
+                  <select value={broadcastRole} onChange={e => setBroadcastRole(e.target.value)} className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm">
+                    <option value="">Everyone (all active users)</option>
+                    <option value="user">Users only</option>
+                    <option value="shopkeeper">Shopkeepers only</option>
+                  </select>
+                </div>
+                <div>
+                  <Label>Title</Label>
+                  <Input value={broadcastTitle} onChange={e => setBroadcastTitle(e.target.value)} placeholder="e.g. System Maintenance Notice" className="mt-1.5" />
+                </div>
+                <div>
+                  <Label>Message</Label>
+                  <textarea
+                    value={broadcastMsg}
+                    onChange={e => setBroadcastMsg(e.target.value)}
+                    placeholder="Write your message here..."
+                    className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm min-h-[100px]"
+                  />
+                </div>
+
+                <div className="rounded-xl bg-orange-50 border border-orange-100 p-3 text-xs text-orange-700">
+                  ⚠️ This will send a notification to <strong>{broadcastRole || 'all'}</strong> users immediately. Double-check before sending.
+                </div>
+
+                <Button onClick={handleBroadcast} disabled={broadcasting} className="w-full sunrise-gradient text-primary-foreground">
+                  {broadcasting ? 'Sending...' : '📢 Send Broadcast'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── SETTINGS ── */}
+        {activeTab === 'settings' && (
+          <div className="max-w-md space-y-4">
+            <div className="glass-card p-6">
+              <h3 className="font-heading text-lg font-semibold mb-4">Platform Margin</h3>
+              <div className="space-y-4">
+                <div>
+                  <Label>Select Shop</Label>
+                  <select value={selectedShopId} onChange={e => setSelectedShopId(e.target.value)} className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm">
+                    <option value="">Choose a shop...</option>
+                    {shops.map((s) => (
+                      <option key={s._id} value={s._id}>{s.name} (current: {s.platformMargin || 0}%)</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <Label>Margin Percentage (%)</Label>
+                  <Input type="number" min={0} max={100} value={margin} onChange={e => setMargin(e.target.value)} placeholder="e.g. 10" className="mt-1.5" />
+                  <p className="text-xs text-muted-foreground mt-1">Added on top of shop prices. Shop gets base price, platform keeps the margin.</p>
+                </div>
+                <Button onClick={handleMargin} className="w-full sunrise-gradient text-primary-foreground">Update Margin</Button>
+              </div>
             </div>
           </div>
         )}
