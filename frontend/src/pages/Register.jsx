@@ -9,7 +9,7 @@ import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const Register = () => {
-  const { register, verifyEmail } = useAuth();
+  const { register, verifyEmail, resendOTP } = useAuth();
   const navigate = useNavigate();
 
   const [form, setForm] = useState({
@@ -58,15 +58,15 @@ const Register = () => {
     }
   };
 
-  // Resend OTP — re-calls register with same form data
+  // Resend OTP — calls dedicated resendOTP endpoint (not register again)
   const handleResend = async () => {
     setResending(true);
     try {
-      await register(form);
+      await resendOTP(form.email);
       toast.success('New OTP sent to your email!');
       setOtp('');
     } catch (err) {
-      toast.error('Failed to resend OTP. Try again.');
+      toast.error(err.response?.data?.message || 'Failed to resend OTP. Try again.');
     } finally {
       setResending(false);
     }
@@ -145,7 +145,7 @@ const Register = () => {
                       <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                       <Input
                         type={showPassword ? 'text' : 'password'}
-                        placeholder="Min 8 chars, uppercase, number, symbol"
+                        placeholder="Min 8 chars with letters and numbers"
                         value={form.password}
                         onChange={(e) => update('password', e.target.value)}
                         className="pl-10 pr-10"
@@ -157,7 +157,7 @@ const Register = () => {
                       </button>
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">
-                      Must include uppercase, lowercase, number and symbol (@$!%*?&)
+                      At least 8 characters with letters and numbers (e.g. techcrew@123)
                     </p>
                   </div>
 

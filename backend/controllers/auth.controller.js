@@ -1,28 +1,11 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/User');
+const Shop = require('../models/Shop');
 const { sendEmail } = require('../utils/email');
 const { AppError, asyncHandler } = require('../utils/helpers');
 const logger = require('../config/logger');
-
-// ─── Cookie Options ───────────────────────────────────────────────────────────
-const getCookieOptions = () => ({
-  expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
-  httpOnly: true,      // Cannot be accessed by JavaScript — XSS protection
-  secure: process.env.NODE_ENV === 'production', // HTTPS only in production
-  sameSite: 'strict',  // CSRF protection
-});
-
-// ─── Password Strength Validator ──────────────────────────────────────────────
-const validatePasswordStrength = (password) => {
-  const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
-  if (!passwordRegex.test(password)) {
-    throw new AppError(
-      'Password must be at least 8 characters and include uppercase, lowercase, number and special character (@$!%*?&)',
-      400
-    );
-  }
-};
+const logger = require('../config/logger');
 
 // ─── Token Helpers ────────────────────────────────────────────────────────────
 const signToken = (id, role) =>
@@ -42,9 +25,6 @@ const sendTokens = async (user, statusCode, res, message = 'Success') => {
   user.password = undefined;
   user.otp = undefined;
 
-  // NEW — Set JWT as HttpOnly cookie
-  res.cookie('jwt', token, getCookieOptions());
-
   res.status(statusCode).json({
     success: true,
     message,
@@ -56,11 +36,27 @@ const sendTokens = async (user, statusCode, res, message = 'Success') => {
 exports.register = asyncHandler(async (req, res) => {
   const { name, email, phone, password, role } = req.body;
 
-  // NEW — Validate password strength before saving
-  validatePasswordStrength(password);
-
   const existingUser = await User.findOne({ $or: [{ email }, { phone }] });
   if (existingUser) {
+    // If user exists but email NOT verified — allow resend OTP instead of blocking
+    if (!existingUser.isEmailVerified && existingUser.email === email) {
+      const otp = existingUser.generateOTP('email_verify');
+      await existingUser.save({ validateBeforeSave: false });
+      try {
+        await sendEmail({
+          to: email,
+          template: 'otpVerification',
+          data: { name: existingUser.name, otp, purpose: 'email verification', expiryMinutes: process.env.OTP_EXPIRY_MINUTES || 5 },
+        });
+      } catch (err) {
+        logger.warn(`OTP resend failed for ${email}: ${err.message}`);
+      }
+      return res.status(200).json({
+        success: true,
+        message: 'OTP resent to your email. Please verify to complete registration.',
+        data: { email, userId: existingUser._id },
+      });
+    }
     const field = existingUser.email === email ? 'email' : 'phone';
     throw new AppError(`User with this ${field} already exists`, 409);
   }
@@ -92,6 +88,35 @@ exports.register = asyncHandler(async (req, res) => {
   });
 });
 
+// ─── Resend Registration OTP ──────────────────────────────────────────────────
+exports.resendOTP = asyncHandler(async (req, res) => {
+  const { email } = req.body;
+  if (!email) throw new AppError('Email is required', 400);
+
+  const user = await User.findOne({ email });
+  if (!user) throw new AppError('No account found with this email', 404);
+  if (user.isEmailVerified) throw new AppError('Email is already verified. Please login.', 400);
+
+  const otp = user.generateOTP('email_verify');
+  await user.save({ validateBeforeSave: false });
+
+  try {
+    await sendEmail({
+      to: email,
+      template: 'otpVerification',
+      data: { name: user.name, otp, purpose: 'email verification', expiryMinutes: process.env.OTP_EXPIRY_MINUTES || 5 },
+    });
+  } catch (err) {
+    logger.warn(`OTP resend failed for ${email}: ${err.message}`);
+  }
+
+  res.status(200).json({
+    success: true,
+    message: 'New OTP sent to your email.',
+    data: { email },
+  });
+});
+
 // ─── Verify Email OTP ─────────────────────────────────────────────────────────
 exports.verifyEmail = asyncHandler(async (req, res) => {
   const { email, otp } = req.body;
@@ -103,6 +128,31 @@ exports.verifyEmail = asyncHandler(async (req, res) => {
   if (!result.valid) throw new AppError(result.message, 400);
 
   user.isEmailVerified = true;
+
+  // AUTO-LINK: If shopkeeper, automatically link them to the default shop
+  // This runs for every new shopkeeper — no manual Atlas linking needed
+  if (user.role === 'shopkeeper' && !user.shop) {
+    try {
+      // Find the shop that has no owner yet OR find by name
+      let shop = await Shop.findOne({ owner: null });
+      if (!shop) {
+        shop = await Shop.findOne({ name: /AISSMS/i });
+      }
+      if (shop) {
+        // Link shop → user (owner)
+        shop.owner = user._id;
+        await shop.save({ validateBeforeSave: false });
+        // Link user → shop
+        user.shop = shop._id;
+        logger.info(`Auto-linked shopkeeper ${user.email} to shop ${shop.name}`);
+      } else {
+        logger.warn(`No available shop found to link shopkeeper ${user.email}`);
+      }
+    } catch (err) {
+      logger.warn(`Auto-link shop failed for ${user.email}: ${err.message}`);
+    }
+  }
+
   await user.save({ validateBeforeSave: false });
 
   await sendTokens(user, 200, res, 'Email verified successfully');
@@ -132,10 +182,12 @@ exports.sendLoginOTP = asyncHandler(async (req, res) => {
   const otp = user.generateOTP('login');
   await user.save({ validateBeforeSave: false });
 
+  // In production, integrate with SMS provider. For now, log OTP (dev) or email.
   if (process.env.NODE_ENV === 'development') {
     logger.info(`🔐 OTP for ${phone}: ${otp}`);
   }
 
+  // Optionally email OTP
   if (user.email) {
     try {
       await sendEmail({
@@ -184,9 +236,6 @@ exports.refreshToken = asyncHandler(async (req, res) => {
   user.refreshToken = newRefreshToken;
   await user.save({ validateBeforeSave: false });
 
-  // NEW — Refresh cookie too
-  res.cookie('jwt', newToken, getCookieOptions());
-
   res.status(200).json({
     success: true,
     data: { token: newToken, refreshToken: newRefreshToken },
@@ -222,9 +271,6 @@ exports.forgotPassword = asyncHandler(async (req, res) => {
 exports.resetPassword = asyncHandler(async (req, res) => {
   const { email, otp, newPassword } = req.body;
 
-  // NEW — Validate new password strength
-  validatePasswordStrength(newPassword);
-
   const user = await User.findOne({ email }).select('+otp.code +otp.expiresAt +otp.purpose +otp.attempts');
   if (!user) throw new AppError('User not found', 404);
 
@@ -241,13 +287,6 @@ exports.resetPassword = asyncHandler(async (req, res) => {
 // ─── Logout ───────────────────────────────────────────────────────────────────
 exports.logout = asyncHandler(async (req, res) => {
   await User.findByIdAndUpdate(req.user.id, { $unset: { refreshToken: 1 } });
-
-  // NEW — Clear the JWT cookie
-  res.cookie('jwt', 'loggedout', {
-    expires: new Date(Date.now() + 1000), // expires in 1 second
-    httpOnly: true,
-  });
-
   res.status(200).json({ success: true, message: 'Logged out successfully' });
 });
 
@@ -260,10 +299,6 @@ exports.getMe = asyncHandler(async (req, res) => {
 // ─── Change Password ──────────────────────────────────────────────────────────
 exports.changePassword = asyncHandler(async (req, res) => {
   const { currentPassword, newPassword } = req.body;
-
-  // NEW — Validate new password strength
-  validatePasswordStrength(newPassword);
-
   const user = await User.findById(req.user.id).select('+password');
 
   if (!(await user.comparePassword(currentPassword))) {
@@ -272,10 +307,6 @@ exports.changePassword = asyncHandler(async (req, res) => {
 
   user.password = newPassword;
   await user.save();
-
-  // NEW — Refresh cookie after password change
-  const token = signToken(user._id, user.role);
-  res.cookie('jwt', token, getCookieOptions());
 
   res.status(200).json({ success: true, message: 'Password changed successfully' });
 });
