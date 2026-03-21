@@ -5,13 +5,12 @@ import { disconnectSocket } from '@/lib/socket';
 const AuthContext = createContext(undefined);
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser]   = useState(null);
-  const [token, setToken] = useState(localStorage.getItem('token'));
+  const [user, setUser]       = useState(null);
+  const [token, setToken]     = useState(localStorage.getItem('token'));
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (token) {
-      // FIX: was /auth/profile (404) — correct endpoint is /auth/me
       authAPI.getMe()
         .then((res) => setUser(res.data.data?.user || res.data.user || res.data))
         .catch(() => { localStorage.removeItem('token'); setToken(null); })
@@ -21,9 +20,9 @@ export const AuthProvider = ({ children }) => {
     }
   }, [token]);
 
+  // Login
   const login = async (email, password) => {
     const res = await authAPI.login({ email, password });
-    // FIX: backend wraps response in res.data.data — was reading res.data directly
     if (res.data.data?.requiresOTP || res.data.requiresOTP) return { requiresOTP: true };
     const { token: newToken, user: newUser } = res.data.data || res.data;
     localStorage.setItem('token', newToken);
@@ -33,13 +32,14 @@ export const AuthProvider = ({ children }) => {
     return {};
   };
 
+  // Register Step 1 — creates user + sends OTP email, no token yet
   const register = async (data) => {
     await authAPI.register(data);
   };
 
-  const verifyOTP = async (email, otp) => {
-    const res = await authAPI.verifyOTP({ email, otp });
-    // FIX: same nested data fix
+  // Register Step 2 — verifies OTP, backend returns token + auto login
+  const verifyEmail = async (email, otp) => {
+    const res = await authAPI.verifyEmail({ email, otp });
     const { token: newToken, user: newUser } = res.data.data || res.data;
     localStorage.setItem('token', newToken);
     localStorage.setItem('user', JSON.stringify(newUser));
@@ -47,6 +47,17 @@ export const AuthProvider = ({ children }) => {
     setUser(newUser);
   };
 
+  // OTP login (phone-based)
+  const verifyOTP = async (email, otp) => {
+    const res = await authAPI.verifyOTP({ email, otp });
+    const { token: newToken, user: newUser } = res.data.data || res.data;
+    localStorage.setItem('token', newToken);
+    localStorage.setItem('user', JSON.stringify(newUser));
+    setToken(newToken);
+    setUser(newUser);
+  };
+
+  // Logout
   const logout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
@@ -57,11 +68,12 @@ export const AuthProvider = ({ children }) => {
 
   return (
     <AuthContext.Provider value={{
-      user, token, loading, login, register, verifyOTP, logout,
+      user, token, loading,
+      login, register, verifyEmail, verifyOTP, logout,
       isAuthenticated: !!user,
-      isAdmin:      user?.role === 'admin',
-      isShopkeeper: user?.role === 'shopkeeper',
-      isUser:       user?.role === 'user',
+      isAdmin:         user?.role === 'admin',
+      isShopkeeper:    user?.role === 'shopkeeper',
+      isUser:          user?.role === 'user',
     }}>
       {children}
     </AuthContext.Provider>
