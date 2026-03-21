@@ -100,17 +100,19 @@ const otpLimiter = rateLimit({
   message: { success: false, message: 'Too many OTP requests. Try again in 15 minutes.' },
 });
 
-// Upload — prevent abuse
+// Upload — dev: unlimited, production: 20/hour
 const uploadLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,  // 1 hour
-  max: 20,
+  windowMs: 60 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 20 : 10000,
+  skip: () => process.env.NODE_ENV !== 'production',
   message: { success: false, message: 'Upload limit reached. Try again in an hour.' },
 });
 
-// Order creation — prevent spam
+// Order creation — dev: unlimited, production: 10/hour
 const orderLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 10,
+  max: process.env.NODE_ENV === 'production' ? 10 : 10000,
+  skip: () => process.env.NODE_ENV !== 'production',
   message: { success: false, message: 'Too many orders placed. Try again in an hour.' },
 });
 
