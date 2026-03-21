@@ -26,9 +26,9 @@ const statusLabels = {
 
 const Orders = () => {
   const { user } = useAuth();
-  const [orders, setOrders]   = useState([]);
+  const [orders, setOrders]     = useState([]);
   const [selected, setSelected] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading]   = useState(true);
 
   useEffect(() => {
     orderAPI.getMyOrders()
@@ -38,7 +38,6 @@ const Orders = () => {
   }, []);
 
   useEffect(() => {
-    // FIX: was 'order-update' — correct event is 'order:status_update'
     const cleanup = onOrderUpdate((data) => {
       setOrders((prev) => prev.map((o) =>
         o._id === data.orderId
@@ -88,6 +87,7 @@ const Orders = () => {
                 transition={{ delay: i * 0.05 }}
                 className="glass-card p-5"
               >
+                {/* Order header */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div className="flex items-center gap-3">
                     <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary">
@@ -98,7 +98,7 @@ const Orders = () => {
                         #{order.orderNumber || order._id.slice(-6).toUpperCase()}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {order.documents?.[0]?.fileName || 'Document'} &bull; {new Date(order.createdAt).toLocaleString('en-IN')}
+                        {order.documents?.[0]?.originalName || order.documents?.[0]?.fileName || 'Document'} &bull; {new Date(order.createdAt).toLocaleString('en-IN')}
                       </p>
                     </div>
                   </div>
@@ -119,30 +119,42 @@ const Orders = () => {
                   </div>
                 </div>
 
-                {/* Status tracker */}
-                <div className="mt-4 flex items-center gap-1 overflow-x-auto pb-1">
+                {/* ── Status tracker — FIX: each circle + label in same column ── */}
+                <div className="mt-5 flex items-start">
                   {statusSteps.map((step, si) => {
                     const currentIdx = statusSteps.indexOf(order.status);
                     const done = si <= currentIdx;
+                    const isLast = si === statusSteps.length - 1;
+
                     return (
-                      <div key={step} className="flex items-center">
-                        <div className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-medium shrink-0 ${done ? 'sunrise-gradient text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>
-                          {done ? <CheckCircle className="h-3.5 w-3.5" /> : si + 1}
+                      <div key={step} className="flex items-start flex-1">
+                        {/* Circle + label stacked */}
+                        <div className="flex flex-col items-center" style={{ minWidth: 0, flex: '0 0 auto', width: 48 }}>
+                          <div className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold shrink-0 ${
+                            done
+                              ? 'sunrise-gradient text-primary-foreground'
+                              : 'bg-muted text-muted-foreground'
+                          }`}>
+                            {done ? <CheckCircle className="h-4 w-4" /> : si + 1}
+                          </div>
+                          <span className={`mt-1.5 text-[10px] text-center leading-tight font-medium ${
+                            done ? 'text-primary' : 'text-muted-foreground'
+                          }`}>
+                            {statusLabels[step]}
+                          </span>
                         </div>
-                        {si < statusSteps.length - 1 && (
-                          <div className={`h-0.5 w-6 sm:w-10 ${done ? 'bg-primary' : 'bg-muted'}`} />
+
+                        {/* Connector line between circles */}
+                        {!isLast && (
+                          <div className="flex-1 flex items-start pt-4">
+                            <div className={`h-0.5 w-full ${done && si < currentIdx ? 'bg-primary' : 'bg-muted'}`} />
+                          </div>
                         )}
                       </div>
                     );
                   })}
                 </div>
-                <div className="mt-1 flex gap-1 text-[10px] text-muted-foreground overflow-x-auto">
-                  {statusSteps.map((s) => (
-                    <span key={s} className="min-w-[52px] text-center capitalize">
-                      {statusLabels[s] || s}
-                    </span>
-                  ))}
-                </div>
+
               </motion.div>
             ))}
           </div>
