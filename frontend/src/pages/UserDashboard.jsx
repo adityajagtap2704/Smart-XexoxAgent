@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { orderAPI, paymentAPI, uploadAPI } from '@/lib/api';
+import { orderAPI, paymentAPI, uploadAPI, userAPI } from '@/lib/api';
 import { onOrderUpdate, onPaymentSuccess, joinOrderRoom } from '@/lib/socket';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -8,12 +8,8 @@ import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { motion } from 'framer-motion';
 import { Upload, FileText, Package, X, Loader2 } from 'lucide-react';
-import { QRCodeSVG } from 'qrcode.react';
 import Navbar from '@/components/layout/Navbar';
 import Footer from '@/components/layout/Footer';
-
-// ── Hardcoded shop — AISSMS College Xerox Centre ─────────────────────────────
-const DEFAULT_SHOP_ID = '69bd47f623f7b2a6b4e6b937';
 
 const statusColors = {
   pending_payment: 'bg-yellow-100 text-yellow-800',
@@ -41,18 +37,20 @@ const statusLabels = {
 
 const UserDashboard = () => {
   const { user } = useAuth();
-  const [orders, setOrders]               = useState([]);
-  const [activeTab, setActiveTab]         = useState('orders');
+  const [orders, setOrders]         = useState([]);
+  const [activeTab, setActiveTab]   = useState('orders');
   const [selectedOrder, setSelectedOrder] = useState(null);
-  const [loading, setLoading]             = useState(true);
+  const [loading, setLoading]       = useState(true);
 
-  const [file, setFile]               = useState(null);
-  const [copies, setCopies]           = useState(1);
-  const [colorType, setColorType]     = useState('bw');
-  const [paperSize, setPaperSize]     = useState('A4');
-  const [doubleSided, setDoubleSided] = useState(false);
-  const [submitting, setSubmitting]   = useState(false);
-  const [uploadStep, setUploadStep]   = useState('');
+  // New order form state
+  const [file, setFile]             = useState(null);
+  const [copies, setCopies]         = useState(1);
+  const [colorType, setColorType]   = useState('bw');
+  const [paperSize, setPaperSize]   = useState('A4');
+  const [selectedShop, setSelectedShop] = useState('');
+  const [doubleSided, setDoubleSided]   = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [uploadStep, setUploadStep] = useState('');
 
   const fetchOrders = useCallback(async () => {
     try {
@@ -61,10 +59,13 @@ const UserDashboard = () => {
     } catch { /* silent */ }
   }, []);
 
+  // Shop is hardcoded — no need to fetch from API
+
   useEffect(() => {
-    fetchOrders().finally(() => setLoading(false));
+    Promise.all([fetchOrders()]).finally(() => setLoading(false));
   }, [fetchOrders]);
 
+  // FIX: listen to correct socket event 'order:status_update'
   useEffect(() => {
     const cleanup = onOrderUpdate((data) => {
       setOrders((prev) =>
@@ -78,8 +79,9 @@ const UserDashboard = () => {
     return cleanup;
   }, []);
 
+  // Listen for payment:success to update order with pickup code
   useEffect(() => {
-    const cleanup = onPaymentSuccess(() => {
+    const cleanup = onPaymentSuccess((data) => {
       fetchOrders();
       toast.success('Payment confirmed! Order is in queue.');
     });
@@ -88,36 +90,38 @@ const UserDashboard = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!file) {
-      toast.error('Please select a file');
+    if (!file || !selectedShop) {
+      toast.error('Please select a file and a shop');
       return;
     }
     setSubmitting(true);
     try {
+      // STEP 1 — Upload file to S3 first
       setUploadStep('Uploading document...');
       const uploadRes = await uploadAPI.uploadFile(file);
       const doc = uploadRes.data.data || uploadRes.data;
+      // doc has: s3Key, s3Url, originalName, detectedPages, fileSize
 
+      // STEP 2 — Create order (backend also creates Razorpay order and returns key/orderId)
       setUploadStep('Creating order...');
       const orderRes = await orderAPI.create({
-        shopId: DEFAULT_SHOP_ID,
-           documents: [{
-              s3Url:         doc.s3Url,
-              s3Key:         doc.s3Key,
-              originalName:  file.name,
-              fileSize:      file.size,
-              detectedPages: doc.detectedPages || 0,
-              printingOptions: {
-                copies,
-                colorMode: colorType,
-                sides:     doubleSided ? 'double' : 'single',
-                paperSize,
-              },
-            }],
+        shopId: selectedShop,
+        documents: [{
+          fileUrl:    doc.s3Url,
+          fileKey:    doc.s3Key,
+          fileName:   file.name,
+          fileSize:   file.size,
+          pages:      doc.detectedPages || 1,
+          colorType,
+          paperSize,
+          copies,
+          doubleSided,
+        }],
       });
 
       const { order, razorpay } = orderRes.data.data;
 
+      // STEP 3 — Open Razorpay checkout
       setUploadStep('Opening payment...');
       const options = {
         key:         razorpay.key,
@@ -126,6 +130,7 @@ const UserDashboard = () => {
         name:        'Smart Xerox',
         description: 'Document Printing',
         order_id:    razorpay.orderId,
+        // UPI only — mobile shows app list, laptop/PC shows QR automatically
         config: {
           display: {
             blocks: { upi: { name: 'Pay via UPI', instruments: [{ method: 'upi' }] } },
@@ -135,6 +140,7 @@ const UserDashboard = () => {
         },
         handler: async (response) => {
           try {
+            // FIX: send camelCase keys to match backend expectation
             await paymentAPI.verify({
               razorpayOrderId:   response.razorpay_order_id,
               razorpayPaymentId: response.razorpay_payment_id,
@@ -184,15 +190,11 @@ const UserDashboard = () => {
         </div>
 
         <div className="mb-6 flex gap-2">
-          {['orders', 'new'].map((tab) => (
+          {['orders','new'].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`rounded-xl px-5 py-2.5 text-sm font-medium transition-all capitalize ${
-                activeTab === tab
-                  ? 'sunrise-gradient text-primary-foreground sunrise-shadow-sm'
-                  : 'bg-secondary text-secondary-foreground'
-              }`}
+              className={`rounded-xl px-5 py-2.5 text-sm font-medium transition-all capitalize ${activeTab === tab ? 'sunrise-gradient text-primary-foreground sunrise-shadow-sm' : 'bg-secondary text-secondary-foreground'}`}
             >
               {tab === 'orders' ? 'My Orders' : 'New Order'}
             </button>
@@ -204,7 +206,6 @@ const UserDashboard = () => {
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="glass-card p-6 max-w-2xl">
             <h2 className="font-heading text-xl font-semibold mb-6">Place New Order</h2>
             <form onSubmit={handleSubmit} className="space-y-5">
-
               <div>
                 <Label>Upload Document</Label>
                 <div className="mt-1.5 border-2 border-dashed border-border rounded-xl p-8 text-center hover:border-primary/50 transition-colors">
@@ -228,21 +229,14 @@ const UserDashboard = () => {
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <Label>Copies</Label>
-                  <Input
-                    type="number" min={1} max={100}
-                    value={copies}
-                    onChange={(e) => setCopies(Number(e.target.value))}
-                    className="mt-1.5"
-                  />
+                  <Input type="number" min={1} max={100} value={copies} onChange={(e) => setCopies(Number(e.target.value))} className="mt-1.5" />
                 </div>
                 <div>
                   <Label>Color Type</Label>
                   <div className="mt-1.5 grid grid-cols-2 gap-2">
-                    {['bw', 'color'].map((t) => (
+                    {['bw','color'].map((t) => (
                       <button key={t} type="button" onClick={() => setColorType(t)}
-                        className={`rounded-lg border px-3 py-2 text-sm font-medium transition-all ${
-                          colorType === t ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground'
-                        }`}>
+                        className={`rounded-lg border px-3 py-2 text-sm font-medium transition-all ${colorType === t ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground'}`}>
                         {t === 'bw' ? 'B&W' : 'Color'}
                       </button>
                     ))}
@@ -251,11 +245,9 @@ const UserDashboard = () => {
                 <div>
                   <Label>Paper Size</Label>
                   <div className="mt-1.5 grid grid-cols-3 gap-2">
-                    {['A4', 'A3', 'Letter'].map((s) => (
+                    {['A4','A3','Letter'].map((s) => (
                       <button key={s} type="button" onClick={() => setPaperSize(s)}
-                        className={`rounded-lg border px-3 py-2 text-sm font-medium transition-all ${
-                          paperSize === s ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground'
-                        }`}>
+                        className={`rounded-lg border px-3 py-2 text-sm font-medium transition-all ${paperSize === s ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground'}`}>
                         {s}
                       </button>
                     ))}
@@ -264,11 +256,9 @@ const UserDashboard = () => {
                 <div>
                   <Label>Print Sides</Label>
                   <div className="mt-1.5 grid grid-cols-2 gap-2">
-                    {[false, true].map((d) => (
+                    {[false,true].map((d) => (
                       <button key={String(d)} type="button" onClick={() => setDoubleSided(d)}
-                        className={`rounded-lg border px-3 py-2 text-sm font-medium transition-all ${
-                          doubleSided === d ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground'
-                        }`}>
+                        className={`rounded-lg border px-3 py-2 text-sm font-medium transition-all ${doubleSided === d ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground'}`}>
                         {d ? 'Double' : 'Single'}
                       </button>
                     ))}
@@ -276,10 +266,15 @@ const UserDashboard = () => {
                 </div>
               </div>
 
-              {/* Shop — hardcoded, no dropdown, no API call */}
-              <div className="rounded-xl bg-secondary px-4 py-3 flex items-center justify-between text-sm">
-                <span className="text-muted-foreground font-medium">📍 Shop</span>
-                <span className="font-semibold">AISSMS College Xerox Centre</span>
+              <div>
+                <Label>Select Shop</Label>
+                <select value={selectedShop} onChange={(e) => setSelectedShop(e.target.value)}
+                  className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" required>
+                  <option value="">Choose a shop...</option>
+                  {shops.map((s) => (
+                    <option key={s._id} value={s._id}>{s.name}{s.address ? ` — ${s.address}` : ''}</option>
+                  ))}
+                </select>
               </div>
 
               <div className="flex items-center justify-between rounded-xl bg-secondary p-4">
@@ -287,11 +282,7 @@ const UserDashboard = () => {
                 <span className="font-heading text-xl font-bold text-primary">₹{estimatedCost()}</span>
               </div>
 
-              <Button
-                type="submit"
-                className="w-full sunrise-gradient text-primary-foreground sunrise-shadow-sm"
-                disabled={submitting}
-              >
+              <Button type="submit" className="w-full sunrise-gradient text-primary-foreground sunrise-shadow-sm" disabled={submitting}>
                 {submitting
                   ? <span className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />{uploadStep || 'Processing...'}</span>
                   : 'Place Order & Pay'}
@@ -300,7 +291,7 @@ const UserDashboard = () => {
           </motion.div>
         )}
 
-        {/* ── Orders List ─────────────────────────────────────────── */}
+        {/* ── Orders List ────────────────────────────────────────── */}
         {activeTab === 'orders' && (
           <div className="space-y-4">
             {loading ? (
@@ -352,12 +343,9 @@ const UserDashboard = () => {
           </div>
         )}
 
-        {/* ── Order Detail Modal ──────────────────────────────────── */}
+        {/* ── Order Detail Modal ─────────────────────────────────── */}
         {selectedOrder && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/50 backdrop-blur-sm p-4"
-            onClick={() => setSelectedOrder(null)}
-          >
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/50 backdrop-blur-sm p-4" onClick={() => setSelectedOrder(null)}>
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -381,48 +369,29 @@ const UserDashboard = () => {
                 </div>
                 {selectedOrder.documents?.[0] && (
                   <>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">File</span>
-                      <span>{selectedOrder.documents[0].fileName}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Copies</span>
-                      <span>{selectedOrder.documents[0].printingOptions?.copies || selectedOrder.documents[0].copies}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Color</span>
-                      <span>{(selectedOrder.documents[0].printingOptions?.colorMode || selectedOrder.documents[0].colorType) === 'color' ? 'Color' : 'B&W'}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Paper</span>
-                      <span>{selectedOrder.documents[0].printingOptions?.paperSize || selectedOrder.documents[0].paperSize}</span>
-                    </div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">File</span><span>{selectedOrder.documents[0].fileName}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Copies</span><span>{selectedOrder.documents[0].copies}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Color</span><span>{selectedOrder.documents[0].colorType === 'color' ? 'Color' : 'B&W'}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Paper</span><span>{selectedOrder.documents[0].paperSize}</span></div>
                   </>
                 )}
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Total</span>
                   <span className="font-bold text-primary">₹{selectedOrder.pricing?.total}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Shop</span>
-                  <span>{selectedOrder.shop?.name || 'AISSMS College Xerox Centre'}</span>
-                </div>
+                {selectedOrder.shop && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Shop</span>
+                    <span>{selectedOrder.shop?.name}</span>
+                  </div>
+                )}
               </div>
 
-              {selectedOrder.status === 'ready' && selectedOrder.pickup?.pickupCode && (
-                <div className="mt-6 rounded-xl bg-green-50 border border-green-200 p-5 text-center">
-                  <p className="text-xs text-green-700 font-semibold uppercase tracking-wide mb-2">Your Pickup OTP</p>
-                  <p className="font-mono text-4xl font-bold text-green-800 tracking-[0.3em]">
-                    {selectedOrder.pickup.pickupCode}
-                  </p>
-                  <p className="text-xs text-green-600 mt-2">Show this code to the shopkeeper</p>
-                </div>
-              )}
-
-              {selectedOrder.status === 'ready' && selectedOrder.pickup?.qrCode && (
-                <div className="mt-4 flex flex-col items-center gap-2">
-                  <p className="text-xs text-muted-foreground">Or scan QR at the shop</p>
-                  <QRCodeSVG value={selectedOrder.pickup.qrCode} size={160} />
+              {/* When ready — just show a note, OTP goes to email */}
+              {selectedOrder.status === 'ready' && (
+                <div className="mt-4 rounded-xl bg-green-50 border border-green-200 p-4 text-center">
+                  <p className="text-sm text-green-700 font-semibold">✅ Your order is ready for pickup!</p>
+                  <p className="text-xs text-green-600 mt-1">Check your email for the pickup OTP.</p>
                 </div>
               )}
             </motion.div>

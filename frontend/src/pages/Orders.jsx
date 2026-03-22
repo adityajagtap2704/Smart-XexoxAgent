@@ -5,8 +5,7 @@ import { onOrderUpdate, joinOrderRoom } from '@/lib/socket';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { motion } from 'framer-motion';
-import { QRCodeSVG } from 'qrcode.react';
-import { FileText, CheckCircle, X, RefreshCw, CreditCard } from 'lucide-react';
+import { FileText, CheckCircle, RefreshCw, CreditCard } from 'lucide-react';
 import Navbar from '@/components/layout/Navbar';
 import Footer from '@/components/layout/Footer';
 
@@ -27,7 +26,6 @@ const statusLabels = {
 const Orders = () => {
   const { user } = useAuth();
   const [orders, setOrders]   = useState([]);
-  const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -66,7 +64,6 @@ const Orders = () => {
     try {
       const res = await orderAPI.retryPayment(order._id);
       const { razorpay } = res.data.data;
-
       const options = {
         key:         razorpay.key,
         amount:      razorpay.amount,
@@ -89,12 +86,8 @@ const Orders = () => {
               razorpaySignature: response.razorpay_signature,
             });
             toast.success('Payment successful! Order is now in queue ✅');
-            // Refresh orders list
-            orderAPI.getMyOrders()
-              .then(r => setOrders(r.data.data?.orders || r.data.orders || []));
-          } catch {
-            toast.error('Payment verification failed. Contact support.');
-          }
+            orderAPI.getMyOrders().then(r => setOrders(r.data.data?.orders || r.data.orders || []));
+          } catch { toast.error('Payment verification failed. Contact support.'); }
         },
         modal: { ondismiss: () => toast.info('Payment cancelled. You can retry anytime.') },
         prefill: { name: order.user?.name, email: order.user?.email },
@@ -156,23 +149,7 @@ const Orders = () => {
                     <span className="font-heading font-bold text-primary">
                       ₹{order.pricing?.total || 0}
                     </span>
-                    {/* Pay Now — for pending_payment orders */}
-                    {order.status === 'pending_payment' && (
-                      <Button
-                        size="sm"
-                        className="sunrise-gradient text-primary-foreground text-xs gap-1"
-                        disabled={payingOrderId === order._id}
-                        onClick={() => handlePayNow(order)}
-                      >
-                        <CreditCard className="h-3 w-3" />
-                        {payingOrderId === order._id ? 'Opening...' : 'Pay Now'}
-                      </Button>
-                    )}
-                    {order.status === 'ready' && (
-                      <Button size="sm" variant="outline" onClick={() => setSelected(order)}>
-                        Show OTP / QR
-                      </Button>
-                    )}
+
                     {['paid','accepted','printing','ready'].includes(order.status) && (
                       <Button size="sm" variant="ghost" onClick={() => handleExtend(order._id)}>
                         <RefreshCw className="h-3 w-3 mr-1" /> Extend
@@ -181,83 +158,43 @@ const Orders = () => {
                   </div>
                 </div>
 
-                {/* Pending payment banner */}
                 {order.status === 'pending_payment' && (
                   <div className="mt-3 rounded-lg bg-yellow-50 border border-yellow-200 px-3 py-2 text-xs text-yellow-800 flex items-center gap-2">
                     <CreditCard className="h-3.5 w-3.5 shrink-0" />
                     <span><strong>Payment pending</strong> — click Pay Now to complete this order.</span>
                   </div>
                 )}
-
-                {/* Status tracker — hidden for pending_payment */}
                 {order.status !== 'pending_payment' && (
-                  <>
-                    <div className="mt-4 flex items-center gap-1 overflow-x-auto pb-1">
-                      {statusSteps.map((step, si) => {
-                        const currentIdx = statusSteps.indexOf(order.status);
-                        const done = si <= currentIdx;
-                        return (
-                          <div key={step} className="flex items-center">
-                            <div className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-medium shrink-0 ${done ? 'sunrise-gradient text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>
-                              {done ? <CheckCircle className="h-3.5 w-3.5" /> : si + 1}
-                            </div>
-                            {si < statusSteps.length - 1 && (
-                              <div className={`h-0.5 w-6 sm:w-10 ${done ? 'bg-primary' : 'bg-muted'}`} />
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <div className="mt-1 flex gap-1 text-[10px] text-muted-foreground overflow-x-auto">
-                      {statusSteps.map((s) => (
-                        <span key={s} className="min-w-[52px] text-center capitalize">
-                          {statusLabels[s] || s}
-                        </span>
-                      ))}
-                    </div>
-                  </>
-                )}
+                <><div className="mt-4 flex items-center gap-1 overflow-x-auto pb-1">
+                  {statusSteps.map((step, si) => {
+                    const currentIdx = statusSteps.indexOf(order.status);
+                    const done = si <= currentIdx;
+                    return (
+                      <div key={step} className="flex items-center">
+                        <div className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-medium shrink-0 ${done ? 'sunrise-gradient text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>
+                          {done ? <CheckCircle className="h-3.5 w-3.5" /> : si + 1}
+                        </div>
+                        {si < statusSteps.length - 1 && (
+                          <div className={`h-0.5 w-6 sm:w-10 ${done ? 'bg-primary' : 'bg-muted'}`} />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-1 flex gap-1 text-[10px] text-muted-foreground overflow-x-auto">
+                  {statusSteps.map((s) => (
+                    <span key={s} className="min-w-[52px] text-center capitalize">
+                      {statusLabels[s] || s}
+                    </span>
+                  ))}
+                </div>
+                </>)}
               </motion.div>
             ))}
           </div>
         )}
 
-        {/* OTP + QR modal for ready orders */}
-        {selected && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/50 backdrop-blur-sm p-4"
-            onClick={() => setSelected(null)}
-          >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="glass-card p-8 text-center max-w-sm w-full relative"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <button onClick={() => setSelected(null)} className="absolute top-3 right-3">
-                <X className="h-5 w-5" />
-              </button>
-              <h3 className="font-heading text-lg font-semibold mb-1">Your Pickup Code</h3>
-              <p className="text-sm text-muted-foreground mb-5">Show this to the shopkeeper</p>
 
-              {selected.pickup?.pickupCode && (
-                <div className="rounded-xl bg-green-50 border border-green-200 p-4 mb-5">
-                  <p className="text-xs text-green-700 font-semibold uppercase tracking-wide mb-1">OTP</p>
-                  <p className="font-mono text-4xl font-bold text-green-800 tracking-[0.3em]">
-                    {selected.pickup.pickupCode}
-                  </p>
-                </div>
-              )}
-
-              {selected.pickup?.qrCode && (
-                <>
-                  <p className="text-xs text-muted-foreground mb-3">Or scan QR code</p>
-                  <QRCodeSVG value={selected.pickup.qrCode} size={180} className="mx-auto" />
-                </>
-              )}
-            </motion.div>
-          </div>
-        )}
       </div>
       <Footer />
     </div>

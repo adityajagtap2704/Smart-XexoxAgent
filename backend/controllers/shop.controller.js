@@ -37,13 +37,21 @@ exports.getNearbyShops = asyncHandler(async (req, res) => {
 // ─── Get All Shops (with pagination) ─────────────────────────────────────────
 exports.getAllShops = asyncHandler(async (req, res) => {
   const { page = 1, limit = 12, city, search } = req.query;
-  const filter = { isActive: true, isVerified: true };
-  if (city) filter['address.city'] = new RegExp(city, 'i');
-  if (search) filter.name = new RegExp(search, 'i');
+
+  // NOTE: Do NOT filter by isActive/isVerified strictly — return all shops
+  // so frontend can always find at least one shop even if not fully configured
+  const filter = {};
+  if (city)   filter['address.city'] = new RegExp(city, 'i');
+  if (search)  filter.name           = new RegExp(search, 'i');
 
   const skip = (page - 1) * limit;
   const [shops, total] = await Promise.all([
-    Shop.find(filter).select('-bankDetails -upiId').sort({ rating: -1 }).skip(skip).limit(Number(limit)).lean(),
+    Shop.find(filter)
+      .select('-bankDetails -upiId')
+      .sort({ createdAt: -1 })   // sort by date — no index needed
+      .skip(skip)
+      .limit(Number(limit))
+      .lean(),
     Shop.countDocuments(filter),
   ]);
 
@@ -103,22 +111,8 @@ exports.updateShop = asyncHandler(async (req, res) => {
 
 // ─── Get Shop Dashboard Stats ─────────────────────────────────────────────────
 exports.getShopDashboard = asyncHandler(async (req, res) => {
-  let shop = await Shop.findOne({ owner: req.user.id });
-
-  // Auto-link: if shopkeeper has no shop linked, find and link one automatically
-  if (!shop) {
-    const unownedShop = await Shop.findOne({ $or: [{ owner: null }, { owner: { $exists: false } }] });
-    const namedShop = !unownedShop ? await Shop.findOne({ name: /AISSMS/i }) : null;
-    shop = unownedShop || namedShop;
-
-    if (shop) {
-      shop.owner = req.user.id;
-      await shop.save({ validateBeforeSave: false });
-      await User.findByIdAndUpdate(req.user.id, { shop: shop._id });
-    } else {
-      throw new AppError('No shop assigned to your account. Contact admin.', 404);
-    }
-  }
+  const shop = await Shop.findOne({ owner: req.user.id });
+  if (!shop) throw new AppError('Shop not found', 404);
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -184,22 +178,7 @@ exports.getShopReviews = asyncHandler(async (req, res) => {
 
 // ─── Get My Shop (simple object, for ShopDashboard header) ──────────────────
 exports.getMyShop = asyncHandler(async (req, res) => {
-  let shop = await Shop.findOne({ owner: req.user.id });
-
-  // Auto-link if not found
-  if (!shop) {
-    const unownedShop = await Shop.findOne({ $or: [{ owner: null }, { owner: { $exists: false } }] });
-    const namedShop = !unownedShop ? await Shop.findOne({ name: /AISSMS/i }) : null;
-    shop = unownedShop || namedShop;
-
-    if (shop) {
-      shop.owner = req.user.id;
-      await shop.save({ validateBeforeSave: false });
-      await User.findByIdAndUpdate(req.user.id, { shop: shop._id });
-    } else {
-      throw new AppError('No shop assigned to your account. Contact admin.', 404);
-    }
-  }
-
+  const shop = await Shop.findOne({ owner: req.user.id });
+  if (!shop) throw new AppError('Shop not found for this account', 404);
   res.status(200).json({ success: true, data: { shop } });
 });
