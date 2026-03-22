@@ -12,6 +12,11 @@ import {
 } from 'lucide-react';
 import Navbar from '@/components/layout/Navbar';
 import Footer from '@/components/layout/Footer';
+import {
+  AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer
+} from 'recharts';
 
 // ── Status colors ─────────────────────────────────────────────────────────────
 const statusColors = {
@@ -26,47 +31,35 @@ const statusColors = {
   expired:         'bg-orange-100 text-orange-700',
 };
 
-// ── Simple bar chart component ────────────────────────────────────────────────
-const SimpleBarChart = ({ data, valueKey, labelKey, color = '#f97316' }) => {
-  if (!data || data.length === 0) return <p className="text-sm text-muted-foreground text-center py-8">No data available</p>;
-  const max = Math.max(...data.map(d => d[valueKey] || 0));
+// ── Chart colors ─────────────────────────────────────────────────────────────
+const CHART_COLORS = ['#f97316','#3b82f6','#8b5cf6','#10b981','#ef4444','#f59e0b','#6b7280','#ec4899'];
+
+// ── Custom Tooltip ────────────────────────────────────────────────────────────
+const CustomTooltip = ({ active, payload, label, prefix = '', suffix = '' }) => {
+  if (!active || !payload?.length) return null;
   return (
-    <div className="space-y-2">
-      {data.slice(-14).map((d, i) => (
-        <div key={i} className="flex items-center gap-3 text-xs">
-          <span className="w-20 text-right text-muted-foreground shrink-0">{d[labelKey]}</span>
-          <div className="flex-1 bg-secondary rounded-full h-5 overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all"
-              style={{ width: `${max > 0 ? (d[valueKey] / max) * 100 : 0}%`, background: color }}
-            />
-          </div>
-          <span className="w-10 font-medium">{d[valueKey]}</span>
-        </div>
+    <div className="rounded-xl border border-border bg-background shadow-lg p-3 text-xs">
+      <p className="font-semibold text-foreground mb-1">{label}</p>
+      {payload.map((p, i) => (
+        <p key={i} style={{ color: p.color }} className="font-medium">
+          {p.name}: {prefix}{typeof p.value === 'number' ? p.value.toLocaleString('en-IN') : p.value}{suffix}
+        </p>
       ))}
     </div>
   );
 };
 
-// ── Donut chart for order status ──────────────────────────────────────────────
-const StatusDonut = ({ data }) => {
-  if (!data || data.length === 0) return <p className="text-sm text-muted-foreground text-center py-8">No data</p>;
-  const colors = ['#f97316','#3b82f6','#8b5cf6','#10b981','#ef4444','#f59e0b','#6b7280'];
-  const total = data.reduce((s, d) => s + d.count, 0);
+// ── Pie Custom Label ──────────────────────────────────────────────────────────
+const PieLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent, name }) => {
+  if (percent < 0.05) return null;
+  const RADIAN = Math.PI / 180;
+  const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
+  const x = cx + radius * Math.cos(-midAngle * RADIAN);
+  const y = cy + radius * Math.sin(-midAngle * RADIAN);
   return (
-    <div className="flex flex-col gap-2">
-      {data.map((d, i) => (
-        <div key={d._id} className="flex items-center gap-3 text-xs">
-          <span className="w-3 h-3 rounded-full shrink-0" style={{ background: colors[i % colors.length] }} />
-          <span className="flex-1 capitalize text-muted-foreground">{d._id?.replace('_', ' ')}</span>
-          <span className="font-semibold">{d.count}</span>
-          <span className="text-muted-foreground w-10 text-right">{total > 0 ? Math.round(d.count / total * 100) : 0}%</span>
-        </div>
-      ))}
-      <div className="border-t border-border pt-2 flex justify-between text-xs font-semibold mt-1">
-        <span>Total</span><span>{total}</span>
-      </div>
-    </div>
+    <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" fontSize={11} fontWeight="bold">
+      {`${(percent * 100).toFixed(0)}%`}
+    </text>
   );
 };
 
@@ -354,48 +347,110 @@ const AdminDashboard = () => {
             ) : (
               <>
                 <div className="grid gap-6 lg:grid-cols-2">
-                  {/* Orders by status */}
+                  {/* Orders by Status — Pie Chart */}
                   <div className="glass-card p-5">
                     <h3 className="font-heading font-semibold mb-4 flex items-center gap-2">
                       <BarChart2 className="h-4 w-4 text-primary" /> Orders by Status
                     </h3>
-                    <StatusDonut data={analytics.ordersByStatus} />
+                    {analytics.ordersByStatus?.length > 0 ? (
+                      <>
+                        <ResponsiveContainer width="100%" height={220}>
+                          <PieChart>
+                            <Pie
+                              data={analytics.ordersByStatus}
+                              dataKey="count"
+                              nameKey="_id"
+                              cx="50%"
+                              cy="50%"
+                              outerRadius={90}
+                              labelLine={false}
+                              label={PieLabel}
+                            >
+                              {analytics.ordersByStatus.map((_, i) => (
+                                <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                              ))}
+                            </Pie>
+                            <Tooltip content={<CustomTooltip />} />
+                          </PieChart>
+                        </ResponsiveContainer>
+                        {/* Legend */}
+                        <div className="grid grid-cols-2 gap-1 mt-2">
+                          {analytics.ordersByStatus.map((d, i) => (
+                            <div key={d._id} className="flex items-center gap-2 text-xs">
+                              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />
+                              <span className="capitalize text-muted-foreground truncate">{d._id?.replace(/_/g, ' ')}</span>
+                              <span className="font-semibold ml-auto">{d.count}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <p className="text-sm text-muted-foreground text-center py-8">No order data yet</p>
+                    )}
                   </div>
 
-                  {/* Top shops */}
+                  {/* Top Shops — Horizontal Bar Chart */}
                   <div className="glass-card p-5">
                     <h3 className="font-heading font-semibold mb-4 flex items-center gap-2">
                       <Store className="h-4 w-4 text-green-500" /> Top Shops by Orders
                     </h3>
-                    <div className="space-y-3">
-                      {(analytics.topShops || []).map((s, i) => (
-                        <div key={s._id} className="flex items-center gap-3 text-sm">
-                          <span className="w-6 h-6 rounded-full bg-primary/10 text-primary text-xs flex items-center justify-center font-bold">{i + 1}</span>
-                          <div className="flex-1">
-                            <p className="font-medium">{s.name}</p>
-                            <p className="text-xs text-muted-foreground">₹{s.totalRevenue || 0} revenue · ⭐ {s.rating || 0}</p>
-                          </div>
-                          <span className="font-bold text-primary">{s.totalOrders || 0} orders</span>
-                        </div>
-                      ))}
-                      {(!analytics.topShops || analytics.topShops.length === 0) && (
-                        <p className="text-sm text-muted-foreground text-center py-4">No shop data yet</p>
-                      )}
-                    </div>
+                    {analytics.topShops?.length > 0 ? (
+                      <ResponsiveContainer width="100%" height={220}>
+                        <BarChart
+                          data={analytics.topShops}
+                          layout="vertical"
+                          margin={{ left: 0, right: 20 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e5e7eb" />
+                          <XAxis type="number" tick={{ fontSize: 11 }} />
+                          <YAxis dataKey="name" type="category" tick={{ fontSize: 11 }} width={100} />
+                          <Tooltip content={<CustomTooltip suffix=" orders" />} />
+                          <Bar dataKey="totalOrders" name="Orders" radius={[0, 6, 6, 0]}>
+                            {analytics.topShops.map((_, i) => (
+                              <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <p className="text-sm text-muted-foreground text-center py-8">No shop data yet</p>
+                    )}
                   </div>
                 </div>
 
-                {/* Order trend - last 30 days */}
+                {/* Order Trend — Area Chart */}
                 <div className="glass-card p-5">
                   <h3 className="font-heading font-semibold mb-4 flex items-center gap-2">
                     <TrendingUp className="h-4 w-4 text-blue-500" /> Order Trend — Last 30 Days
                   </h3>
-                  <SimpleBarChart
-                    data={analytics.orderTrend || []}
-                    valueKey="count"
-                    labelKey="_id"
-                    color="#3b82f6"
-                  />
+                  {analytics.orderTrend?.length > 0 ? (
+                    <ResponsiveContainer width="100%" height={260}>
+                      <AreaChart data={analytics.orderTrend} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                        <defs>
+                          <linearGradient id="colorOrders" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis dataKey="_id" tick={{ fontSize: 11 }} tickFormatter={v => v?.slice(5)} />
+                        <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                        <Tooltip content={<CustomTooltip suffix=" orders" />} />
+                        <Area
+                          type="monotone"
+                          dataKey="count"
+                          name="Orders"
+                          stroke="#3b82f6"
+                          strokeWidth={2.5}
+                          fill="url(#colorOrders)"
+                          dot={{ r: 4, fill: '#3b82f6', strokeWidth: 2, stroke: '#fff' }}
+                          activeDot={{ r: 6 }}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <p className="text-sm text-muted-foreground text-center py-8">No trend data yet</p>
+                  )}
                 </div>
               </>
             )}
@@ -418,50 +473,93 @@ const AdminDashboard = () => {
               </div>
             </div>
 
-            {/* Totals */}
+            {/* Stat cards */}
             {revenue?.totals && (
               <div className="grid gap-4 sm:grid-cols-4">
                 {[
-                  { label: 'Total Revenue',    value: `₹${revenue.totals.totalRevenue    || 0}`, color: 'text-primary'       },
-                  { label: 'Platform Revenue', value: `₹${revenue.totals.platformRevenue || 0}`, color: 'text-orange-500'    },
-                  { label: 'Shop Revenue',     value: `₹${revenue.totals.shopRevenue     || 0}`, color: 'text-green-500'     },
-                  { label: 'Total Orders',     value: revenue.totals.orderCount           || 0,  color: 'text-blue-500'      },
+                  { label: 'Total Revenue',    value: `₹${(revenue.totals.totalRevenue    || 0).toLocaleString('en-IN')}`, color: 'text-primary'    },
+                  { label: 'Platform Revenue', value: `₹${(revenue.totals.platformRevenue || 0).toLocaleString('en-IN')}`, color: 'text-orange-500' },
+                  { label: 'Shop Revenue',     value: `₹${(revenue.totals.shopRevenue     || 0).toLocaleString('en-IN')}`, color: 'text-green-500'  },
+                  { label: 'Total Orders',     value: revenue.totals.orderCount || 0,                                      color: 'text-blue-500'   },
                 ].map((s) => (
                   <div key={s.label} className="glass-card p-4 text-center">
-                    <p className={`font-heading text-xl font-bold ${s.color}`}>{s.value}</p>
+                    <p className={`font-heading text-2xl font-bold ${s.color}`}>{s.value}</p>
                     <p className="text-xs text-muted-foreground mt-1">{s.label}</p>
                   </div>
                 ))}
               </div>
             )}
 
-            {/* Revenue chart */}
+            {/* Total Revenue — Area Chart */}
             <div className="glass-card p-5">
-              <h3 className="font-heading font-semibold mb-4 flex items-center gap-2">
-                <DollarSign className="h-4 w-4 text-orange-500" /> Revenue by {revenueGroup}
+              <h3 className="font-heading font-semibold mb-1 flex items-center gap-2">
+                <DollarSign className="h-4 w-4 text-primary" /> Total Revenue by {revenueGroup}
               </h3>
-              {!revenue ? (
-                <p className="text-sm text-muted-foreground text-center py-8">Loading...</p>
+              <p className="text-xs text-muted-foreground mb-4">Overall platform + shop revenue combined</p>
+              {!revenue?.revenue?.length ? (
+                <p className="text-sm text-muted-foreground text-center py-8">No revenue data yet</p>
               ) : (
-                <SimpleBarChart
-                  data={revenue.revenue || []}
-                  valueKey="totalRevenue"
-                  labelKey="_id"
-                  color="#f97316"
-                />
+                <ResponsiveContainer width="100%" height={280}>
+                  <AreaChart data={revenue.revenue} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                    <defs>
+                      <linearGradient id="gradTotal" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#f97316" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="#f97316" stopOpacity={0} />
+                      </linearGradient>
+                      <linearGradient id="gradShop" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                    <XAxis dataKey="_id" tick={{ fontSize: 11 }} tickFormatter={v => revenueGroup === 'day' ? v?.slice(5) : v} />
+                    <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${v}`} />
+                    <Tooltip content={<CustomTooltip prefix="₹" />} />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                    <Area type="monotone" dataKey="totalRevenue" name="Total Revenue" stroke="#f97316" strokeWidth={2.5} fill="url(#gradTotal)" dot={{ r: 3 }} />
+                    <Area type="monotone" dataKey="shopRevenue" name="Shop Revenue" stroke="#10b981" strokeWidth={2} fill="url(#gradShop)" dot={{ r: 3 }} />
+                  </AreaChart>
+                </ResponsiveContainer>
               )}
             </div>
 
-            {/* Platform vs Shop revenue */}
-            {revenue?.revenue && revenue.revenue.length > 0 && (
+            {/* Revenue Breakdown — Grouped Bar Chart */}
+            {revenue?.revenue?.length > 0 && (
               <div className="glass-card p-5">
-                <h3 className="font-heading font-semibold mb-4">Platform Revenue</h3>
-                <SimpleBarChart
-                  data={revenue.revenue}
-                  valueKey="platformRevenue"
-                  labelKey="_id"
-                  color="#8b5cf6"
-                />
+                <h3 className="font-heading font-semibold mb-1 flex items-center gap-2">
+                  <BarChart2 className="h-4 w-4 text-purple-500" /> Revenue Breakdown
+                </h3>
+                <p className="text-xs text-muted-foreground mb-4">Platform margin vs shop receivable per period</p>
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={revenue.revenue} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                    <XAxis dataKey="_id" tick={{ fontSize: 11 }} tickFormatter={v => revenueGroup === 'day' ? v?.slice(5) : v} />
+                    <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${v}`} />
+                    <Tooltip content={<CustomTooltip prefix="₹" />} />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                    <Bar dataKey="platformRevenue" name="Platform Margin" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="shopRevenue" name="Shop Revenue" fill="#10b981" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+
+            {/* Orders per period */}
+            {revenue?.revenue?.length > 0 && (
+              <div className="glass-card p-5">
+                <h3 className="font-heading font-semibold mb-1 flex items-center gap-2">
+                  <Package className="h-4 w-4 text-blue-500" /> Orders per Period
+                </h3>
+                <p className="text-xs text-muted-foreground mb-4">Number of paid orders by {revenueGroup}</p>
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={revenue.revenue} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                    <XAxis dataKey="_id" tick={{ fontSize: 11 }} tickFormatter={v => revenueGroup === 'day' ? v?.slice(5) : v} />
+                    <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                    <Tooltip content={<CustomTooltip suffix=" orders" />} />
+                    <Bar dataKey="orderCount" name="Orders" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
             )}
           </div>
