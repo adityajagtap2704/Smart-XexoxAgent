@@ -5,7 +5,7 @@ const Payment = require('../models/Payment');
 const { AppError, asyncHandler } = require('../utils/helpers');
 const { createRazorpayOrder } = require('../config/razorpay');
 const { generateQRCode } = require('../utils/qrcode');
-const { emitToUser, emitToShop, emitToAdmin } = require('../config/socket');
+const { emitToUser, emitToShop, emitToAdmin, emitToAgent } = require('../config/socket');
 const { createNotification } = require('../utils/notifications');
 const { calculateOrderPrice } = require('../utils/pricing');
 const { getPresignedUrl } = require('../config/aws');
@@ -199,6 +199,15 @@ exports.acceptOrder = asyncHandler(async (req, res) => {
     order: order._id,
   });
   emitToUser(order.user._id.toString(), 'order:status_update', { orderId: order._id, status: 'accepted', orderNumber: order.orderNumber });
+
+  // ── REAL-TIME: Notify print agent to start printing immediately ──────────
+  emitToAgent(order.shop._id.toString(), 'order:accepted', {
+    orderId:     order._id,
+    orderNumber: order.orderNumber,
+    shopId:      order.shop._id,
+    documents:   order.documents,
+    user:        { name: order.user.name, email: order.user.email },
+  });
 
   res.status(200).json({ success: true, message: 'Order accepted', data: { order } });
 });

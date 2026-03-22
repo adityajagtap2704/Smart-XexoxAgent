@@ -150,7 +150,7 @@ const Orders = () => {
                       ₹{order.pricing?.total || 0}
                     </span>
 
-                    {order.status === 'pending_payment' && (
+                    {(order.status === 'pending_payment' || order.payment?.status === 'pending') && (
                       <Button size="sm" className="sunrise-gradient text-primary-foreground text-xs gap-1"
                         disabled={payingOrderId === order._id} onClick={() => handlePayNow(order)}>
                         <CreditCard className="h-3 w-3" />
@@ -166,7 +166,7 @@ const Orders = () => {
                   </div>
                 </div>
 
-                {order.status === 'pending_payment' && (
+                {(order.status === 'pending_payment' || order.payment?.status === 'pending') && (
                   <div className="mt-3 rounded-lg bg-yellow-50 border border-yellow-200 px-3 py-2 text-xs text-yellow-800 flex items-center gap-2">
                     <CreditCard className="h-3.5 w-3.5 shrink-0" />
                     <span><strong>Payment pending</strong> — click Pay Now to complete this order.</span>

@@ -1,13 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  Smart Xerox — Print Agent
+//  Smart Xerox — Print Agent (REAL-TIME VERSION)
 //  File: print-agent/agent.js
 //
-//  Runs permanently on the shop's Windows PC.
-//  Every POLL_INTERVAL_MS it checks the backend for newly accepted orders.
-//  When found: downloads PDF from S3 → sends to printer → updates status.
+//  UPGRADE: Replaced polling with Socket.IO real-time events.
+//  Agent connects to backend via Socket.IO and listens for 'order:accepted'
+//  events. When received — downloads PDF → prints → updates status instantly.
 //
-//  The user's browser screen updates to "Printing" automatically via Socket.IO
-//  the moment this agent calls the /auto-printed endpoint.
+//  Polling is kept as FALLBACK only (runs every 60s) to catch any missed events.
 // ─────────────────────────────────────────────────────────────────────────────
 
 require('dotenv').config();
@@ -18,6 +17,7 @@ const fs      = require('fs');
 const path    = require('path');
 const os      = require('os');
 const winston = require('winston');
+const { io }  = require('socket.io-client');
 
 // ─── Logger ───────────────────────────────────────────────────────────────────
 const logger = winston.createLogger({
@@ -32,60 +32,121 @@ const logger = winston.createLogger({
     new winston.transports.Console(),
     new winston.transports.File({
       filename: 'print-agent.log',
-      maxsize: 5_000_000,  // 5 MB
+      maxsize: 5_000_000,
       maxFiles: 3,
     }),
   ],
 });
 
-// ─── Config validation ────────────────────────────────────────────────────────
-const API_URL      = process.env.API_URL;
+// ─── Config ───────────────────────────────────────────────────────────────────
+const API_URL      = process.env.API_URL;           // e.g. http://localhost:5000/api
+const SOCKET_URL   = process.env.SOCKET_URL || API_URL?.replace('/api', ''); // e.g. http://localhost:5000
 const TOKEN        = process.env.SHOP_TOKEN;
 const PRINTER_NAME = process.env.PRINTER_NAME || '';
-const POLL_MS      = parseInt(process.env.POLL_INTERVAL_MS) || 5000;
+const POLL_MS      = parseInt(process.env.POLL_INTERVAL_MS) || 60000; // fallback every 60s
 const MAX_RETRIES  = parseInt(process.env.MAX_RETRIES) || 3;
 
-if (!API_URL) {
-  logger.error('MISSING: API_URL is not set in .env file');
-  process.exit(1);
-}
-if (!TOKEN || TOKEN === 'paste_your_shopkeeper_jwt_token_here') {
-  logger.error('MISSING: SHOP_TOKEN is not set in .env file');
-  logger.error('Get it from: Chrome → F12 → Application → Local Storage → token');
+if (!API_URL || !TOKEN || TOKEN === 'paste_your_shopkeeper_jwt_token_here') {
+  logger.error('MISSING: API_URL or SHOP_TOKEN not set in .env');
   process.exit(1);
 }
 
 // ─── State ────────────────────────────────────────────────────────────────────
-const printedOrders = new Set();   // orders already sent to printer this session
-const retryCount    = new Map();   // orderId → number of failed print attempts
-let   isPolling     = false;       // prevent overlapping polls
+const printedOrders   = new Set();  // prevent duplicate prints
+const printingNow     = new Set();  // orders currently being processed
+const retryCount      = new Map();  // orderId → failed attempts
+let   fallbackPolling = false;
 
-// ─── Axios instance ───────────────────────────────────────────────────────────
+// ─── Axios ────────────────────────────────────────────────────────────────────
 const api = axios.create({
   baseURL: API_URL,
   headers: { Authorization: `Bearer ${TOKEN}` },
   timeout: 20000,
 });
 
-// Handle 401 — token expired
-api.interceptors.response.use(
-  res => res,
-  err => {
-    if (err.response?.status === 401) {
-      logger.error('JWT token expired or invalid!');
-      logger.error('Fix: get a fresh token from Chrome DevTools and update SHOP_TOKEN in .env');
-      logger.error('Then restart: pm2 restart SmartXerox-PrintAgent');
-    }
-    return Promise.reject(err);
+api.interceptors.response.use(res => res, err => {
+  if (err.response?.status === 401) {
+    logger.error('JWT token expired! Update SHOP_TOKEN in .env and restart.');
   }
-);
+  return Promise.reject(err);
+});
 
-// ─── API calls ────────────────────────────────────────────────────────────────
-async function fetchAcceptedOrders() {
-  const res = await api.get('/orders/shop/orders?status=accepted&limit=50');
-  return res.data.data?.orders || res.data.orders || [];
+// ─── Socket.IO Connection ─────────────────────────────────────────────────────
+function connectSocket() {
+  const socket = io(SOCKET_URL, {
+    auth: { token: TOKEN },
+    transports: ['websocket'],
+    reconnection: true,
+    reconnectionDelay: 2000,
+    reconnectionDelayMax: 10000,
+    reconnectionAttempts: Infinity,
+  });
+
+  socket.on('connect', () => {
+    logger.info(`✅ Socket connected: ${socket.id}`);
+
+    // Join the shop's room to receive shop-specific events
+    socket.emit('join:agent', { token: TOKEN });
+    logger.info('📡 Joined shop agent room');
+  });
+
+  socket.on('disconnect', (reason) => {
+    logger.warn(`⚠️  Socket disconnected: ${reason}. Reconnecting...`);
+  });
+
+  socket.on('reconnect', (attempt) => {
+    logger.info(`🔄 Socket reconnected after ${attempt} attempt(s)`);
+  });
+
+  socket.on('connect_error', (err) => {
+    logger.warn(`Socket connect error: ${err.message}. Will retry...`);
+  });
+
+  // ── MAIN EVENT: order accepted by shopkeeper ──────────────────────────────
+  socket.on('order:accepted', async (data) => {
+    logger.info(`🔔 REAL-TIME: order:accepted received — Order #${data.orderNumber || data.orderId}`);
+
+    if (!data.orderId) {
+      logger.warn('Received order:accepted with no orderId — skipping');
+      return;
+    }
+
+    if (printedOrders.has(data.orderId) || printingNow.has(data.orderId)) {
+      logger.info(`Order ${data.orderId} already printed or in progress — skipping`);
+      return;
+    }
+
+    // Fetch full order details from backend
+    try {
+      const res = await api.get(`/orders/${data.orderId}`);
+      const order = res.data.data?.order || res.data.order;
+      if (!order) {
+        logger.warn(`Could not fetch order ${data.orderId}`);
+        return;
+      }
+      await processOrder(order);
+    } catch (err) {
+      logger.error(`Failed to fetch order ${data.orderId}: ${err.message}`);
+    }
+  });
+
+  // ── Listen for manual trigger from shopkeeper dashboard ──────────────────
+  socket.on('print:trigger', async (data) => {
+    logger.info(`🖨️  Manual print trigger for Order #${data.orderNumber || data.orderId}`);
+    if (printedOrders.has(data.orderId) || printingNow.has(data.orderId)) return;
+    try {
+      const res = await api.get(`/orders/${data.orderId}`);
+      const order = res.data.data?.order || res.data.order;
+      if (order) await processOrder(order);
+    } catch (err) {
+      logger.error(`Failed to process manual trigger: ${err.message}`);
+    }
+  });
+
+  return socket;
 }
 
+// ─── API Calls ────────────────────────────────────────────────────────────────
 async function getDocumentDownloadUrl(orderId, docId) {
   const res = await api.get(`/orders/${orderId}/documents/${docId}/url`);
   const url = res.data.data?.downloadUrl;
@@ -97,178 +158,172 @@ async function markOrderPrinting(orderId) {
   await api.patch(`/orders/${orderId}/auto-printed`);
 }
 
-// ─── Download PDF from S3 ─────────────────────────────────────────────────────
+// ─── Download PDF ─────────────────────────────────────────────────────────────
 async function downloadPDF(s3Url, filename) {
   const tmpPath = path.join(os.tmpdir(), filename);
-  const res = await axios.get(s3Url, {
-    responseType: 'arraybuffer',
-    timeout: 60000,  // 60s for large files
-  });
+  const res = await axios.get(s3Url, { responseType: 'arraybuffer', timeout: 60000 });
   fs.writeFileSync(tmpPath, res.data);
-  logger.info(`  Downloaded to temp: ${tmpPath}`);
+  logger.info(`  Downloaded → ${tmpPath}`);
   return tmpPath;
 }
 
-// ─── Build printer options from order document settings ──────────────────────
+// ─── Build Printer Options ────────────────────────────────────────────────────
 function buildPrinterOptions(doc) {
   const opts = {};
-
-  // Printer name
   if (PRINTER_NAME) opts.printer = PRINTER_NAME;
 
-  // Copies (pdf-to-printer handles this natively)
-  if (doc.copies && doc.copies > 1) opts.copies = doc.copies;
+  // Support both old field names and new printingOptions structure
+  const printOpts = doc.printingOptions || doc;
+  const copies    = printOpts.copies    || doc.copies    || 1;
+  const colorMode = printOpts.colorMode || doc.colorType || 'bw';
+  const sides     = printOpts.sides     || (doc.doubleSided ? 'double' : 'single');
+  const paperSize = printOpts.paperSize || doc.paperSize || 'A4';
 
-  // Paper size
+  if (copies > 1) opts.copies = copies;
+
   const paperMap = { A4: 'A4', A3: 'A3', Letter: 'Letter' };
-  if (doc.paperSize && paperMap[doc.paperSize]) {
-    opts.paperSize = paperMap[doc.paperSize];
-  }
+  if (paperMap[paperSize]) opts.paperSize = paperMap[paperSize];
 
-  // Double-sided / duplex
-  if (doc.doubleSided) {
-    opts.duplex = 'DuplexLongEdge';
-  }
-
-  // B&W / monochrome
-  if (doc.colorType === 'bw') {
-    opts.monochrome = true;
-  }
+  if (sides === 'double') opts.duplex = 'DuplexLongEdge';
+  if (colorMode === 'bw') opts.monochrome = true;
 
   return opts;
 }
 
-// ─── Print a single document ──────────────────────────────────────────────────
+// ─── Print Single Document ────────────────────────────────────────────────────
 async function printDocument(order, doc) {
   const tag = `[#${order.orderNumber || order._id.slice(-6)} | doc ${doc._id.slice(-4)}]`;
 
-  logger.info(`${tag} Getting S3 signed URL from backend...`);
+  logger.info(`${tag} Getting signed URL...`);
   const s3Url = await getDocumentDownloadUrl(order._id, doc._id);
 
-  const filename = `smartxerox_${order._id}_${doc._id}.pdf`;
   logger.info(`${tag} Downloading PDF...`);
-  const tmpPath = await downloadPDF(s3Url, filename);
+  const filename = `sx_${order._id}_${doc._id}.pdf`;
+  const tmpPath  = await downloadPDF(s3Url, filename);
 
   const opts = buildPrinterOptions(doc);
-  logger.info(`${tag} Sending to printer with options: ${JSON.stringify(opts)}`);
-
+  logger.info(`${tag} Printing with options: ${JSON.stringify(opts)}`);
   await printer.print(tmpPath, opts);
-  logger.info(`${tag} Sent to printer successfully`);
+  logger.info(`${tag} ✅ Sent to printer`);
 
-  // Clean up temp file
   try { fs.unlinkSync(tmpPath); } catch (_) {}
 }
 
-// ─── Process one full order (may have multiple documents) ─────────────────────
+// ─── Process Full Order ───────────────────────────────────────────────────────
 async function processOrder(order) {
-  const tag = `Order #${order.orderNumber || order._id.slice(-6)}`;
-  logger.info(`${tag} — starting (${order.documents.length} doc(s), customer: ${order.user?.name || 'unknown'})`);
-
-  for (const doc of order.documents) {
-    let attempt = 0;
-    let success = false;
-
-    while (attempt < MAX_RETRIES && !success) {
-      try {
-        await printDocument(order, doc);
-        success = true;
-      } catch (err) {
-        attempt++;
-        logger.warn(`${tag} doc ${doc._id.slice(-4)} — attempt ${attempt}/${MAX_RETRIES} failed: ${err.message}`);
-        if (attempt < MAX_RETRIES) {
-          logger.info(`${tag} Retrying in 3 seconds...`);
-          await new Promise(r => setTimeout(r, 3000));
-        }
-      }
-    }
-
-    if (!success) {
-      // Track consecutive failures
-      const fails = (retryCount.get(order._id) || 0) + 1;
-      retryCount.set(order._id, fails);
-
-      if (fails >= 3) {
-        logger.error(`${tag} — giving up after ${fails} poll cycles of failures. Mark as printed to avoid loop.`);
-        printedOrders.add(order._id);
-      }
-
-      logger.error(`${tag} — PRINT FAILED for doc ${doc._id.slice(-4)}. Manual intervention needed.`);
-      return; // Don't advance status if print failed
-    }
+  if (order.status !== 'accepted') {
+    logger.info(`Order ${order._id} status is '${order.status}' — skipping (not accepted)`);
+    return;
   }
 
-  // All docs printed — tell backend to move status to 'printing'
-  // This triggers real-time Socket.IO push to user's browser
+  if (printedOrders.has(order._id) || printingNow.has(order._id)) {
+    logger.info(`Order ${order._id} already handled — skipping`);
+    return;
+  }
+
+  printingNow.add(order._id);
+  const tag = `Order #${order.orderNumber || order._id.slice(-6)}`;
+  logger.info(`${tag} ▶ Processing (${order.documents?.length || 0} doc(s))`);
+
   try {
+    for (const doc of (order.documents || [])) {
+      let attempt = 0;
+      let success = false;
+
+      while (attempt < MAX_RETRIES && !success) {
+        try {
+          await printDocument(order, doc);
+          success = true;
+        } catch (err) {
+          attempt++;
+          logger.warn(`${tag} attempt ${attempt}/${MAX_RETRIES} failed: ${err.message}`);
+          if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, 3000));
+        }
+      }
+
+      if (!success) {
+        const fails = (retryCount.get(order._id) || 0) + 1;
+        retryCount.set(order._id, fails);
+        logger.error(`${tag} ❌ PRINT FAILED after ${MAX_RETRIES} attempts`);
+        printingNow.delete(order._id);
+        return;
+      }
+    }
+
+    // All docs printed — update backend status → triggers Socket.IO to user
     await markOrderPrinting(order._id);
     printedOrders.add(order._id);
     retryCount.delete(order._id);
-    logger.info(`${tag} — COMPLETE. Status → printing. User notified in real-time.`);
+    logger.info(`${tag} ✅ COMPLETE — status → printing, user notified in real-time`);
+
   } catch (err) {
-    logger.error(`${tag} — Printed OK but failed to update status: ${err.message}`);
-    // Still mark locally so we don't reprint
-    printedOrders.add(order._id);
+    logger.error(`${tag} Unexpected error: ${err.message}`);
+    printedOrders.add(order._id); // prevent infinite retry
+  } finally {
+    printingNow.delete(order._id);
   }
 }
 
-// ─── Main poll loop ───────────────────────────────────────────────────────────
-async function poll() {
-  if (isPolling) return;
-  isPolling = true;
+// ─── Fallback Polling (safety net for missed socket events) ──────────────────
+async function fallbackPoll() {
+  if (fallbackPolling) return;
+  fallbackPolling = true;
 
   try {
-    const orders = await fetchAcceptedOrders();
+    logger.info('🔄 Fallback poll — checking for missed accepted orders...');
+    const res = await api.get('/orders/shop/orders?status=accepted&limit=50');
+    const orders = res.data.data?.orders || res.data.orders || [];
 
-    const pending = orders.filter(o =>
+    const missed = orders.filter(o =>
       !printedOrders.has(o._id) &&
-      (retryCount.get(o._id) || 0) < 3
+      !printingNow.has(o._id) &&
+      (retryCount.get(o._id) || 0) < MAX_RETRIES
     );
 
-    if (pending.length > 0) {
-      logger.info(`Found ${pending.length} new order(s) to print`);
-    }
-
-    // Process sequentially to avoid printer queue conflicts
-    for (const order of pending) {
-      await processOrder(order);
+    if (missed.length > 0) {
+      logger.info(`Fallback: found ${missed.length} unprinted accepted order(s)`);
+      for (const order of missed) await processOrder(order);
     }
 
   } catch (err) {
-    if (err.response?.status !== 401) {
-      logger.warn(`Poll error: ${err.message}`);
-    }
+    if (err.response?.status !== 401) logger.warn(`Fallback poll error: ${err.message}`);
   } finally {
-    isPolling = false;
+    fallbackPolling = false;
   }
 }
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
 async function start() {
-  logger.info('═══════════════════════════════════════════════');
-  logger.info('  Smart Xerox Print Agent — STARTED');
-  logger.info(`  Backend: ${API_URL}`);
-  logger.info(`  Printer: ${PRINTER_NAME || '(system default)'}`);
-  logger.info(`  Poll:    every ${POLL_MS / 1000}s`);
-  logger.info('═══════════════════════════════════════════════');
+  logger.info('═══════════════════════════════════════════════════');
+  logger.info('  Smart Xerox Print Agent — REAL-TIME MODE');
+  logger.info(`  Backend : ${API_URL}`);
+  logger.info(`  Socket  : ${SOCKET_URL}`);
+  logger.info(`  Printer : ${PRINTER_NAME || '(system default)'}`);
+  logger.info(`  Fallback: every ${POLL_MS / 1000}s`);
+  logger.info('═══════════════════════════════════════════════════');
 
-  // List available printers so shopkeeper can verify the name
+  // List printers
   try {
     const printers = await printer.getPrinters();
-    logger.info('Available printers on this PC:');
-    printers.forEach((p, i) => {
-      logger.info(`  ${i + 1}. ${p.name}${p.isDefault ? '  ← DEFAULT' : ''}`);
-    });
+    logger.info('Available printers:');
+    printers.forEach((p, i) =>
+      logger.info(`  ${i + 1}. ${p.name}${p.isDefault ? '  ← DEFAULT' : ''}`)
+    );
     if (PRINTER_NAME && !printers.find(p => p.name === PRINTER_NAME)) {
-      logger.warn(`WARNING: PRINTER_NAME="${PRINTER_NAME}" not found in the list above!`);
-      logger.warn('Update PRINTER_NAME in .env to match exactly, then restart.');
+      logger.warn(`⚠️  PRINTER_NAME="${PRINTER_NAME}" not found! Update .env`);
     }
   } catch {
-    logger.warn('Could not list printers — printing may still work if default is set');
+    logger.warn('Could not list printers');
   }
 
-  // Start polling
-  setInterval(poll, POLL_MS);
-  poll(); // run immediately on start
+  // Connect Socket.IO for real-time events
+  connectSocket();
+
+  // Fallback poll (every 60s) to catch any missed socket events
+  setInterval(fallbackPoll, POLL_MS);
+
+  // Run fallback immediately on start to pick up any pending orders
+  setTimeout(fallbackPoll, 3000);
 }
 
 start();
