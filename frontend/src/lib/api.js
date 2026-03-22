@@ -56,6 +56,7 @@ export const orderAPI = {
   getById:        (id)             => api.get(`/orders/${id}`),
   updateStatus:   (id, status)     => api.patch(`/orders/${id}/status`, { status }),
   cancel:         (id)             => api.delete(`/orders/${id}`),
+  rateOrder:      (id, data)       => api.post(`/orders/${id}/rate`, data),
   getMyOrders:    ()               => api.get('/orders/my-orders'),
   verifyPickup:   (data)           => api.post('/orders/verify-pickup', data),
   extendExpiry:   (id)             => api.post(`/orders/${id}/extend`),
