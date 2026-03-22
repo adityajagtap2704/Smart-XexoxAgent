@@ -150,6 +150,14 @@ const Orders = () => {
                       ₹{order.pricing?.total || 0}
                     </span>
 
+                    {order.status === 'pending_payment' && (
+                      <Button size="sm" className="sunrise-gradient text-primary-foreground text-xs gap-1"
+                        disabled={payingOrderId === order._id} onClick={() => handlePayNow(order)}>
+                        <CreditCard className="h-3 w-3" />
+                        {payingOrderId === order._id ? 'Opening...' : 'Pay Now'}
+                      </Button>
+                    )}
+
                     {['paid','accepted','printing','ready'].includes(order.status) && (
                       <Button size="sm" variant="ghost" onClick={() => handleExtend(order._id)}>
                         <RefreshCw className="h-3 w-3 mr-1" /> Extend
