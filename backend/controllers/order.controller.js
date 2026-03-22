@@ -356,8 +356,7 @@ exports.extendOrderExpiry = asyncHandler(async (req, res) => {
   order.expiry.extended = true;
   order.expiry.extendedAt = new Date();
   order.expiry.extendedBy = req.user.id;
-  order.addStatusHistory(order.status, `Order expiry extended by ${extensionHours} hours`, req.user.id);
-  await order.save();
+  await order.save({ validateBeforeSave: false });
 
   emitToShop(order.shop.toString(), 'order:extended', { orderId: order._id, newExpiry: order.expiry.expiresAt });
 
