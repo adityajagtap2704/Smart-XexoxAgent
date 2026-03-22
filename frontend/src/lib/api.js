@@ -38,6 +38,16 @@ export const authAPI = {
   logout:          ()      => api.post('/auth/logout'),
 };
 
+// User Profile
+export const userAPI = {
+  getProfile:           ()      => api.get('/users/profile'),
+  updateProfile:        (data)  => api.patch('/users/profile', data),
+  requestContactChange: (data)  => api.post('/users/request-change', data),
+  verifyContactChange:  (data)  => api.post('/users/verify-change', data),
+  getStats:             ()      => api.get('/users/stats'),
+  getOrderHistory:      ()      => api.get('/users/orders'),
+};
+
 // Orders
 export const orderAPI = {
   // Order is created with JSON body (documents array with S3 urls, NOT FormData)
