@@ -3,7 +3,6 @@ const Shop = require('../models/Shop');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
 const { AppError, asyncHandler } = require('../utils/helpers');
-const { deleteFile } = require('../config/aws');
 const { createRazorpayOrder } = require('../config/razorpay');
 const { generateQRCode } = require('../utils/qrcode');
 const { emitToUser, emitToShop, emitToAdmin } = require('../config/socket');
@@ -215,17 +214,6 @@ exports.rejectOrder = asyncHandler(async (req, res) => {
   order.addStatusHistory('rejected', reason || 'Rejected by shopkeeper', req.user.id);
   order.rejectionReason = reason;
   await order.save();
-  // Delete S3 files immediately on rejection
-  for (const doc of order.documents) {
-    if (doc.s3Key) {
-      try {
-        await deleteFile(doc.s3Key);
-        logger.info(`S3 file deleted after rejection: ${doc.s3Key}`);
-      } catch (err) {
-        logger.warn(`Failed to delete S3 file ${doc.s3Key}: ${err.message}`);
-      }
-    }
-  }
 
   await createNotification({
     recipient: order.user._id,
@@ -331,17 +319,6 @@ exports.verifyPickup = asyncHandler(async (req, res) => {
   order.pickup.verifiedAt = new Date();
   order.pickup.verifiedBy = req.user.id;
   await order.save();
-  // Delete S3 files immediately after pickup
-  for (const doc of order.documents) {
-    if (doc.s3Key) {
-      try {
-        await deleteFile(doc.s3Key);
-        logger.info(`S3 file deleted after pickup: ${doc.s3Key}`);
-      } catch (err) {
-        logger.warn(`Failed to delete S3 file ${doc.s3Key}: ${err.message}`);
-      }
-    }
-  }
 
   // Update shop and user stats
   await Shop.findByIdAndUpdate(order.shop._id, {
@@ -379,7 +356,7 @@ exports.extendOrderExpiry = asyncHandler(async (req, res) => {
   order.expiry.extended = true;
   order.expiry.extendedAt = new Date();
   order.expiry.extendedBy = req.user.id;
-  order.addStatusHistory('', `Order expiry extended by ${extensionHours} hours`, req.user.id);
+  order.addStatusHistory(order.status, `Order expiry extended by ${extensionHours} hours`, req.user.id);
   await order.save();
 
   emitToShop(order.shop.toString(), 'order:extended', { orderId: order._id, newExpiry: order.expiry.expiresAt });
@@ -504,4 +481,31 @@ exports.markAutoPrinted = asyncHandler(async (req, res) => {
 
   logger.info(`Order ${order.orderNumber} auto-printed by agent, status → printing`);
   res.status(200).json({ success: true, message: 'Status updated to printing', data: { order } });
+});
+
+// ─── Retry Payment — reopen Razorpay for pending_payment orders ───────────────
+exports.retryPayment = asyncHandler(async (req, res) => {
+  const order = await Order.findOne({ _id: req.params.id, user: req.user.id });
+  if (!order) throw new AppError('Order not found', 404);
+
+  if (order.status !== 'pending_payment') {
+    throw new AppError('This order has already been paid or cancelled', 400);
+  }
+
+  if (!order.payment?.razorpayOrderId) {
+    throw new AppError('Payment details missing. Please place a new order.', 400);
+  }
+
+  res.status(200).json({
+    success: true,
+    data: {
+      order,
+      razorpay: {
+        orderId:  order.payment.razorpayOrderId,
+        amount:   Math.round(order.pricing.total * 100),
+        currency: 'INR',
+        key:      process.env.RAZORPAY_KEY_ID,
+      },
+    },
+  });
 });
