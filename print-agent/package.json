@@ -1,7 +1,7 @@
 {
   "name": "smart-xerox-print-agent",
-  "version": "2.0.0",
-  "description": "Real-time print agent for Smart Xerox — Socket.IO based",
+  "version": "3.0.0",
+  "description": "Fault-tolerant real-time print agent for Smart Xerox",
   "main": "agent.js",
   "scripts": {
     "start": "node agent.js",
@@ -10,6 +10,7 @@
   "dependencies": {
     "axios": "^1.6.0",
     "pdf-to-printer": "^5.1.1",
+    "pdf-lib": "^1.17.1",
     "dotenv": "^16.3.1",
     "winston": "^3.11.0",
     "socket.io-client": "^4.6.1"
@@ -17,7 +18,5 @@
   "devDependencies": {
     "nodemon": "^3.0.1"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  }
+  "engines": { "node": ">=18.0.0" }
 }

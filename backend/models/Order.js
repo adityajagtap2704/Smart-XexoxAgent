@@ -85,6 +85,24 @@ const orderSchema = new mongoose.Schema(
       extendedAt: Date,
       extendedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     },
+    // ── Print Job Tracking (fault-tolerant printing) ─────────────────────────
+    printJob: {
+      status: {
+        type: String,
+        enum: ['idle', 'queued', 'printing', 'paused', 'completed', 'failed'],
+        default: 'idle',
+      },
+      startedAt:      Date,
+      completedAt:    Date,
+      pausedAt:       Date,
+      pauseReason:    String,   // 'out_of_paper' | 'power_failure' | 'printer_error' | 'manual'
+      totalPages:     { type: Number, default: 0 },
+      printedPages:   { type: Number, default: 0 },  // checkpoint — pages done so far
+      currentDocIndex:{ type: Number, default: 0 },  // which document we are on
+      retryCount:     { type: Number, default: 0 },
+      lastError:      String,
+      agentId:        String,   // socket id of the agent that is printing
+    },
     rejectionReason: String,
     shopNote: String, // Note from shopkeeper to user
     rating: {

@@ -491,6 +491,153 @@ exports.markAutoPrinted = asyncHandler(async (req, res) => {
   res.status(200).json({ success: true, message: 'Status updated to printing', data: { order } });
 });
 
+
+// ─── Update Print Job Progress (called by Print Agent) ───────────────────────
+// Agent calls this to save checkpoint after each page — survives power failure
+exports.updatePrintJob = asyncHandler(async (req, res) => {
+  const { status, printedPages, totalPages, currentDocIndex, pauseReason, lastError, agentId } = req.body;
+
+  const order = await Order.findById(req.params.id).populate('shop').populate('user', 'name');
+  if (!order) throw new AppError('Order not found', 404);
+
+  // Update print job checkpoint
+  if (!order.printJob) order.printJob = {};
+  if (status)           order.printJob.status        = status;
+  if (printedPages !== undefined) order.printJob.printedPages  = printedPages;
+  if (totalPages   !== undefined) order.printJob.totalPages    = totalPages;
+  if (currentDocIndex !== undefined) order.printJob.currentDocIndex = currentDocIndex;
+  if (pauseReason)      order.printJob.pauseReason   = pauseReason;
+  if (lastError)        order.printJob.lastError      = lastError;
+  if (agentId)          order.printJob.agentId        = agentId;
+
+  if (status === 'printing' && !order.printJob.startedAt) {
+    order.printJob.startedAt = new Date();
+  }
+  if (status === 'paused') {
+    order.printJob.pausedAt = new Date();
+  }
+  if (status === 'completed') {
+    order.printJob.completedAt = new Date();
+  }
+
+  await order.save({ validateBeforeSave: false });
+
+  // Notify shopkeeper dashboard in real-time
+  const shopId = order.shop._id?.toString() || order.shop.toString();
+
+  if (status === 'paused' && pauseReason === 'out_of_paper') {
+    // Alert shopkeeper — printer needs paper
+    emitToShop(shopId, 'print:out_of_paper', {
+      orderId:      order._id,
+      orderNumber:  order.orderNumber,
+      printedPages: order.printJob.printedPages,
+      totalPages:   order.printJob.totalPages,
+      message:      `Printer out of paper! Printed ${order.printJob.printedPages}/${order.printJob.totalPages} pages.`,
+    });
+
+    // Create notification for shopkeeper
+    await createNotification({
+      recipient: order.shop.owner || req.user.id,
+      type:      'system',
+      title:     '🖨️ Printer Out of Paper!',
+      message:   `Order #${order.orderNumber}: Printed ${order.printJob.printedPages}/${order.printJob.totalPages} pages. Add paper and resume.`,
+      order:     order._id,
+      priority:  'high',
+    });
+  }
+
+  if (status === 'paused' && pauseReason === 'printer_error') {
+    emitToShop(shopId, 'print:error', {
+      orderId:     order._id,
+      orderNumber: order.orderNumber,
+      error:       lastError,
+      message:     `Printer error: ${lastError}`,
+    });
+  }
+
+  if (status === 'completed') {
+    emitToShop(shopId, 'print:completed', {
+      orderId:     order._id,
+      orderNumber: order.orderNumber,
+      message:     'All pages printed successfully.',
+    });
+  }
+
+  res.status(200).json({ success: true, data: { printJob: order.printJob } });
+});
+
+// ─── Get Print Job Status (called by Agent on resume/restart) ─────────────────
+// Agent calls this on startup to find any incomplete jobs to resume
+exports.getPrintJobStatus = asyncHandler(async (req, res) => {
+  const order = await Order.findById(req.params.id);
+  if (!order) throw new AppError('Order not found', 404);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      orderId:        order._id,
+      orderStatus:    order.status,
+      printJob:       order.printJob || { status: 'idle', printedPages: 0 },
+      documents:      order.documents,
+    },
+  });
+});
+
+// ─── Resume Print Job (shopkeeper clicks Resume after adding paper) ───────────
+exports.resumePrintJob = asyncHandler(async (req, res) => {
+  const order = await Order.findById(req.params.id).populate('shop');
+  if (!order) throw new AppError('Order not found', 404);
+  if (order.shop.owner.toString() !== req.user.id) throw new AppError('Access denied', 403);
+
+  if (order.printJob?.status !== 'paused') {
+    throw new AppError('Print job is not paused', 400);
+  }
+
+  order.printJob.status      = 'queued';
+  order.printJob.pauseReason = null;
+  order.printJob.pausedAt    = null;
+  await order.save({ validateBeforeSave: false });
+
+  // Tell print agent to resume
+  const shopId = order.shop._id.toString();
+  emitToAgent(shopId, 'print:resume', {
+    orderId:          order._id,
+    orderNumber:      order.orderNumber,
+    resumeFromPage:   order.printJob.printedPages,
+    currentDocIndex:  order.printJob.currentDocIndex,
+    documents:        order.documents,
+  });
+
+  logger.info(`Print job resumed for order ${order.orderNumber} from page ${order.printJob.printedPages}`);
+
+  res.status(200).json({
+    success: true,
+    message: `Resuming from page ${order.printJob.printedPages + 1}`,
+    data:    { printJob: order.printJob },
+  });
+});
+
+// ─── Get Incomplete Print Jobs (agent calls on startup) ──────────────────────
+exports.getIncompletePrintJobs = asyncHandler(async (req, res) => {
+  // Find shop for this shopkeeper
+  const shop = await require('../models/Shop').findOne({ owner: req.user.id });
+  if (!shop) throw new AppError('Shop not found', 404);
+
+  const incompletJobs = await Order.find({
+    shop: shop._id,
+    status: { $in: ['accepted', 'printing'] },
+    $or: [
+      { 'printJob.status': { $in: ['queued', 'printing', 'paused'] } },
+      { 'printJob.status': { $exists: false } },
+    ],
+  }).select('_id orderNumber status printJob documents user').populate('user', 'name');
+
+  res.status(200).json({
+    success: true,
+    data: { orders: incompletJobs },
+  });
+});
+
 // ─── Retry Payment — reopen Razorpay for pending_payment orders ───────────────
 exports.retryPayment = asyncHandler(async (req, res) => {
   const order = await Order.findOne({ _id: req.params.id, user: req.user.id });

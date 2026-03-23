@@ -47,7 +47,6 @@ const UserDashboard = () => {
   const [copies, setCopies]         = useState(1);
   const [colorType, setColorType]   = useState('bw');
   const [paperSize, setPaperSize]   = useState('A4');
-  const [selectedShop, setSelectedShop] = useState('');
   const [doubleSided, setDoubleSided]   = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [uploadStep, setUploadStep] = useState('');
@@ -90,7 +89,7 @@ const UserDashboard = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!file || !selectedShop) {
+    if (!file) {
       toast.error('Please select a file and a shop');
       return;
     }
@@ -105,7 +104,7 @@ const UserDashboard = () => {
       // STEP 2 — Create order (backend also creates Razorpay order and returns key/orderId)
       setUploadStep('Creating order...');
       const orderRes = await orderAPI.create({
-        shopId: selectedShop,
+        shopId: DEFAULT_SHOP_ID,
         documents: [{
           fileUrl:    doc.s3Url,
           fileKey:    doc.s3Key,
@@ -266,15 +265,9 @@ const UserDashboard = () => {
                 </div>
               </div>
 
-              <div>
-                <Label>Select Shop</Label>
-                <select value={selectedShop} onChange={(e) => setSelectedShop(e.target.value)}
-                  className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" required>
-                  <option value="">Choose a shop...</option>
-                  {shops.map((s) => (
-                    <option key={s._id} value={s._id}>{s.name}{s.address ? ` — ${s.address}` : ''}</option>
-                  ))}
-                </select>
+              <div className="rounded-xl bg-secondary/50 border border-border px-4 py-3 flex items-center justify-between text-sm">
+                <span className="text-muted-foreground font-medium">📍 Shop</span>
+                <span className="font-semibold">AISSMS College Xerox Centre</span>
               </div>
 
               <div className="flex items-center justify-between rounded-xl bg-secondary p-4">

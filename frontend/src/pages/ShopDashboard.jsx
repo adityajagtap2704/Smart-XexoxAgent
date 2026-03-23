@@ -105,6 +105,36 @@ const ShopDashboard = () => {
     return () => s.off('order:new', onNew);
   }, [fetchOrders]);
 
+  // ── Print job real-time alerts ────────────────────────────────────────────
+  useEffect(() => {
+    const s = getSocket();
+    const onOutOfPaper = (data) => {
+      toast.error(`🖨️ OUT OF PAPER — Order #${data.orderNumber}: ${data.printedPages}/${data.totalPages} pages done. Add paper then click Resume.`, { duration: 10000 });
+      fetchOrders(true);
+    };
+    const onPrintError   = (data) => { toast.error(`🖨️ PRINTER ERROR — ${data.error}`, { duration: 8000 }); fetchOrders(true); };
+    const onPrintComplete = (data) => { toast.success(`✅ Printing complete — Order #${data.orderNumber}`); fetchOrders(true); };
+    s.on('print:out_of_paper', onOutOfPaper);
+    s.on('print:error',        onPrintError);
+    s.on('print:completed',    onPrintComplete);
+    return () => {
+      s.off('print:out_of_paper', onOutOfPaper);
+      s.off('print:error',        onPrintError);
+      s.off('print:completed',    onPrintComplete);
+    };
+  }, [fetchOrders]);
+
+  // ── Resume Print Job ──────────────────────────────────────────────────────
+  const handleResumePrint = async (orderId) => {
+    try {
+      await orderAPI.resumePrint(orderId);
+      toast.success('▶️ Print job resumed!');
+      fetchOrders(true);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to resume');
+    }
+  };
+
   // ── Accept / status update ─────────────────────────────────────────────────
   const updateStatus = async (orderId, status) => {
     try {

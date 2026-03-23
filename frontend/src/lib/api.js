@@ -61,6 +61,8 @@ export const orderAPI = {
   // FIX: was api.post('/orders/:id/verify-pickup') — backend route is POST /orders/verify-pickup with orderId in body
   verifyPickup:    (data)          => api.post('/orders/verify-pickup', data),
   retryPayment:    (id)            => api.post(`/orders/retry/${id}`),
+  resumePrint:     (id)            => api.post(`/orders/${id}/resume-print`),
+  getPrintJob:     (id)            => api.get(`/orders/${id}/print-job`),
   extendExpiry:    (id)            => api.post(`/orders/${id}/extend`),
   // FIX: added missing accept / reject / getDocumentUrl
   accept:          (id)            => api.patch(`/orders/${id}/accept`),
