@@ -70,17 +70,16 @@ let   socket        = null;
 let   fallbackRunning = false;
 
 // ─── Axios ────────────────────────────────────────────────────────────────────
-const api = axios.create({
-  baseURL: CLEAN_API_URL,
-  headers: { Authorization: `Bearer ${TOKEN}` },
-  timeout: 30000,
-});
-api.interceptors.response.use(res => res, err => {
-  if (err.response?.status === 401) {
-    logger.error('JWT token expired! Update SHOP_TOKEN in .env and restart.');
-  }
-  return Promise.reject(err);
-});
+// Use axios.create with full baseURL. url() builds absolute paths.
+// We use axios directly for GET/PATCH to avoid ERR_INVALID_URL in Node 18+.
+const AUTH = { headers: { Authorization: `Bearer ${TOKEN}` }, timeout: 30000, proxy: false };
+
+const api = {
+  get:   (path, cfg)        => axios.get(`${CLEAN_API_URL}${path}`,         { ...AUTH, ...cfg }),
+  post:  (path, data, cfg)  => axios.post(`${CLEAN_API_URL}${path}`, data,  { ...AUTH, ...cfg }),
+  patch: (path, data, cfg)  => axios.patch(`${CLEAN_API_URL}${path}`, data, { ...AUTH, ...cfg }),
+};
+// 401 check is handled in each catch block via err.response?.status
 
 // ─── Print Job Checkpoint API ─────────────────────────────────────────────────
 // Save progress to DB — survives power failure
@@ -482,7 +481,6 @@ function connectSocket() {
 // On power failure, agent restarts and picks up where it left off
 async function recoverIncompleteJobs() {
   logger.info('🔍 Checking for incomplete print jobs from before restart...');
-
   try {
     const res    = await api.get('/orders/incomplete-jobs');
     const orders = res.data.data?.orders || [];
@@ -538,7 +536,7 @@ async function fallbackPoll() {
       for (const o of missed) await processOrder(o);
     }
   } catch (err) {
-    if (err.response?.status !== 401) logger.warn(`Fallback error: ${err.message}`);
+    if (err.response?.status !== 401) { logger.warn(`Fallback error: ${err.message}`); }
   } finally {
     fallbackRunning = false;
   }
@@ -547,7 +545,7 @@ async function fallbackPoll() {
 // ─── Start ────────────────────────────────────────────────────────────────────
 async function start() {
   logger.info('═══════════════════════════════════════════════════════');
-  logger.info('  Smart Xerox Print Agent — FAULT TOLERANT v3.0');
+  logger.info('  Smart Xerox Print Agent — FAULT TOLERANT v3.1');
   logger.info(`  Backend : ${API_URL}`);
   logger.info(`  Socket  : ${SOCKET_URL}`);
   logger.info(`  Printer : ${PRINTER_NAME || '(system default)'}`);
