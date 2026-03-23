@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { orderAPI, paymentAPI, uploadAPI, userAPI } from '@/lib/api';
+import { orderAPI, paymentAPI, uploadAPI } from '@/lib/api';
 import { onOrderUpdate, onPaymentSuccess, joinOrderRoom } from '@/lib/socket';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -35,6 +35,10 @@ const statusLabels = {
   expired:         'Expired',
 };
 
+// Hardcoded AISSMS shop — only one shop in the system
+const SHOP_ID   = '69bd47f623f7b2a6b4e6b937';
+const SHOP_NAME = 'AISSMS College Xerox Centre';
+
 const UserDashboard = () => {
   const { user } = useAuth();
   const [orders, setOrders]         = useState([]);
@@ -58,13 +62,10 @@ const UserDashboard = () => {
     } catch { /* silent */ }
   }, []);
 
-  // Shop is hardcoded — no need to fetch from API
-
   useEffect(() => {
-    Promise.all([fetchOrders()]).finally(() => setLoading(false));
+    fetchOrders().finally(() => setLoading(false));
   }, [fetchOrders]);
 
-  // FIX: listen to correct socket event 'order:status_update'
   useEffect(() => {
     const cleanup = onOrderUpdate((data) => {
       setOrders((prev) =>
@@ -78,9 +79,8 @@ const UserDashboard = () => {
     return cleanup;
   }, []);
 
-  // Listen for payment:success to update order with pickup code
   useEffect(() => {
-    const cleanup = onPaymentSuccess((data) => {
+    const cleanup = onPaymentSuccess(() => {
       fetchOrders();
       toast.success('Payment confirmed! Order is in queue.');
     });
@@ -90,27 +90,26 @@ const UserDashboard = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!file) {
-      toast.error('Please select a file and a shop');
+      toast.error('Please select a file to upload');
       return;
     }
     setSubmitting(true);
     try {
-      // STEP 1 — Upload file to S3 first
+      // STEP 1 — Upload file to S3
       setUploadStep('Uploading document...');
       const uploadRes = await uploadAPI.uploadFile(file);
       const doc = uploadRes.data.data || uploadRes.data;
-      // doc has: s3Key, s3Url, originalName, detectedPages, fileSize
 
-      // STEP 2 — Create order (backend also creates Razorpay order and returns key/orderId)
+      // STEP 2 — Create order
       setUploadStep('Creating order...');
       const orderRes = await orderAPI.create({
-        shopId: DEFAULT_SHOP_ID,
+        shopId: SHOP_ID,
         documents: [{
-          fileUrl:    doc.s3Url,
-          fileKey:    doc.s3Key,
-          fileName:   file.name,
-          fileSize:   file.size,
-          pages:      doc.detectedPages || 1,
+          originalName: file.name,
+          s3Url:        doc.s3Url,
+          s3Key:        doc.s3Key,
+          fileSize:     file.size,
+          pages:        doc.detectedPages || 1,
           colorType,
           paperSize,
           copies,
@@ -120,7 +119,7 @@ const UserDashboard = () => {
 
       const { order, razorpay } = orderRes.data.data;
 
-      // STEP 3 — Open Razorpay checkout
+      // STEP 3 — Open Razorpay
       setUploadStep('Opening payment...');
       const options = {
         key:         razorpay.key,
@@ -129,7 +128,6 @@ const UserDashboard = () => {
         name:        'Smart Xerox',
         description: 'Document Printing',
         order_id:    razorpay.orderId,
-        // UPI only — mobile shows app list, laptop/PC shows QR automatically
         config: {
           display: {
             blocks: { upi: { name: 'Pay via UPI', instruments: [{ method: 'upi' }] } },
@@ -139,22 +137,21 @@ const UserDashboard = () => {
         },
         handler: async (response) => {
           try {
-            // FIX: send camelCase keys to match backend expectation
             await paymentAPI.verify({
               razorpayOrderId:   response.razorpay_order_id,
               razorpayPaymentId: response.razorpay_payment_id,
               razorpaySignature: response.razorpay_signature,
             });
-            toast.success('Payment successful! Order placed.');
+            toast.success('Payment successful! Order placed. ✅');
             fetchOrders();
             setActiveTab('orders');
           } catch {
-            toast.error('Payment verification failed. Contact support with order ID: ' + order._id);
+            toast.error('Payment verification failed. Contact support — Order ID: ' + order._id);
           }
         },
         modal: {
           ondismiss: () => {
-            toast.error('Payment cancelled. Your order is saved — complete payment from My Orders.');
+            toast.info('Payment cancelled. Complete it anytime from My Orders → Pay Now.');
           },
         },
         prefill: { name: user?.name, email: user?.email, contact: user?.phone },
@@ -163,7 +160,6 @@ const UserDashboard = () => {
 
       const rzp = new window.Razorpay(options);
       rzp.open();
-
       setFile(null);
       setCopies(1);
     } catch (err) {
@@ -267,7 +263,7 @@ const UserDashboard = () => {
 
               <div className="rounded-xl bg-secondary/50 border border-border px-4 py-3 flex items-center justify-between text-sm">
                 <span className="text-muted-foreground font-medium">📍 Shop</span>
-                <span className="font-semibold">AISSMS College Xerox Centre</span>
+                <span className="font-semibold">{SHOP_NAME}</span>
               </div>
 
               <div className="flex items-center justify-between rounded-xl bg-secondary p-4">

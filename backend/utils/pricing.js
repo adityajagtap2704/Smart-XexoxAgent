@@ -15,9 +15,11 @@ const calculateOrderPrice = (documents, shop, additionalServices = {}) => {
     // Effective pages considering double-sided
     const effectivePages = sides === 'double' ? Math.ceil(pages / 2) : pages;
 
-    // Base price per page from shop
+    // Base price per page from shop — with fallback defaults
     const sidePriceKey = sides === 'double' ? 'doubleSided' : 'singleSided';
-    const basePrice = shop.pricing[colorMode][sidePriceKey];
+    const shopPricing  = shop.pricing || {};
+    const colorPricing = shopPricing[colorMode] || shopPricing['bw'] || {};
+    const basePrice    = colorPricing[sidePriceKey] || (colorMode === 'color' ? 5 : 1);
 
     const docPrice = basePrice * effectivePages * copies;
     documentPrices.push(docPrice);

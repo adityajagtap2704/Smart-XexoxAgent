@@ -49,6 +49,20 @@ if (!API_URL || !TOKEN || TOKEN === 'paste_your_shopkeeper_jwt_token_here') {
   process.exit(1);
 }
 
+// Validate API_URL format
+try {
+  new URL(API_URL);
+} catch {
+  logger.error(`Invalid API_URL: "${API_URL}" — must be like http://localhost:5000/api`);
+  process.exit(1);
+}
+
+// Strip trailing slash from API_URL
+if (API_URL.endsWith('/')) {
+  logger.warn('API_URL has trailing slash — removing it automatically');
+}
+const CLEAN_API_URL = API_URL.replace(/\/+$/, '');
+
 // ─── State ────────────────────────────────────────────────────────────────────
 const printingNow   = new Set();   // orders currently printing
 const printedOrders = new Set();   // fully completed orders
@@ -57,7 +71,7 @@ let   fallbackRunning = false;
 
 // ─── Axios ────────────────────────────────────────────────────────────────────
 const api = axios.create({
-  baseURL: API_URL,
+  baseURL: CLEAN_API_URL,
   headers: { Authorization: `Bearer ${TOKEN}` },
   timeout: 30000,
 });
