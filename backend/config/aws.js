@@ -6,10 +6,14 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
 const s3Client = new S3Client({
-  region: process.env.AWS_REGION,
+  region: process.env.AWS_REGION || 'ap-south-1',
   credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    accessKeyId:     process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+  requestHandler: {
+    requestTimeout: 30000,   // 30 second timeout — prevents infinite hang
+    connectionTimeout: 5000, // 5 second connection timeout
   },
 });
 
