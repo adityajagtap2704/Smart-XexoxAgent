@@ -30,6 +30,8 @@ export const authAPI = {
   register:        (data)  => api.post('/auth/register', data),
   login:           (data)  => api.post('/auth/login', data),
   verifyOTP:       (data)  => api.post('/auth/verify-otp', data),
+  verifyEmail:     (data) => api.post('/auth/verify-email', data),
+  resendOTP:       (data) => api.post('/auth/resend-otp', data),
   // FIX: was /auth/profile (route does not exist) — correct route is /auth/me
   getMe:           ()      => api.get('/auth/me'),
   getProfile:      ()      => api.get('/auth/me'),
@@ -120,16 +122,32 @@ export const notificationAPI = {
 
 // Admin
 export const adminAPI = {
-  getDashboard:  ()        => api.get('/admin/dashboard'),
-  getAnalytics:  ()        => api.get('/admin/analytics'),
-  getRevenue:    ()        => api.get('/admin/revenue'),
-  getUsers:      ()        => api.get('/admin/users'),
-  toggleUser:    (id)      => api.patch(`/admin/users/${id}/toggle-status`),
-  getShops:      ()        => api.get('/admin/shops'),
-  verifyShop:    (id, data)=> api.patch(`/admin/shops/${id}/verify`, data),
-  setMargin:     (id, data)=> api.patch(`/admin/shops/${id}/margin`, data),
-  getOrders:     ()        => api.get('/admin/orders'),
-  broadcast:     (data)    => api.post('/admin/notifications/broadcast', data),
+  getDashboard: () => api.get('/admin/dashboard'),
+  getAnalytics: () => api.get('/admin/analytics'),
+
+  getRevenue: (query) =>
+    api.get(`/admin/revenue${query ? `?${query}` : ''}`),
+
+  getUsers: (query) =>
+    api.get(`/admin/users${query ? `?${query}` : ''}`),
+
+  toggleUser: (id) =>
+    api.patch(`/admin/users/${id}/toggle-status`),
+
+  getShops: (query) =>
+    api.get(`/admin/shops${query ? `?${query}` : ''}`),
+
+  verifyShop: (id, data) =>
+    api.patch(`/admin/shops/${id}/verify`, data),
+
+  setMargin: (id, data) =>
+    api.patch(`/admin/shops/${id}/margin`, data),
+
+  getOrders: (query) =>
+    api.get(`/admin/orders${query ? `?${query}` : ''}`),
+
+  broadcast: (data) =>
+    api.post('/admin/notifications/broadcast', data),
 };
 
 export default api;
