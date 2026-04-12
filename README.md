@@ -26,7 +26,8 @@ A full-stack production-grade web application that connects users with nearby pr
 ```
 smart-xerox/
 ├── frontend/               ← React 18 + Vite + Tailwind CSS
-└── backend/                ← Node.js + Express + MongoDB
+├── backend/                ← Node.js + Express + MongoDB
+└── print-agent-app/        ← Electron Desktop Print Agent
 ```
 
 ---
@@ -136,6 +137,30 @@ npm run dev
 ```
 
 > Frontend runs on `http://localhost:3000`
+
+---
+
+### 4. Desktop Print Agent Setup (for Shop PCs)
+
+The Print Agent is an Electron desktop app that automatically prints orders on the shop's physical printer.
+
+```bash
+cd print-agent-app
+npm install
+```
+
+**Run in development:**
+```bash
+npm start
+```
+
+**Build installer for shopkeepers:**
+```bash
+npm run build:win
+# Output: dist/Smart Xerox Print Agent Setup 1.0.0.exe
+```
+
+Shopkeepers simply install the `.exe`, login with their shopkeeper credentials, select their printer from a dropdown, and click Connect. The app auto-starts on Windows boot.
 
 ---
 

@@ -11,6 +11,7 @@ import Register from './pages/Register';
 import Services from './pages/Services';
 import UserDashboard from './pages/UserDashboard';
 import ShopDashboard from './pages/ShopDashboard';
+import WebPrintAgent from './pages/WebPrintAgent';
 import AdminDashboard from './pages/AdminDashboard';
 import Orders from './pages/Orders';
 import NotFound from './pages/NotFound';
@@ -31,6 +32,7 @@ const App = () => (
             <Route path="/services" element={<Services />} />
             <Route path="/dashboard" element={<ProtectedRoute roles={['user']}><UserDashboard /></ProtectedRoute>} />
             <Route path="/shop" element={<ProtectedRoute roles={['shopkeeper']}><ShopDashboard /></ProtectedRoute>} />
+            <Route path="/shop/print/:orderId" element={<ProtectedRoute roles={['shopkeeper']}><WebPrintAgent /></ProtectedRoute>} />
             <Route path="/admin" element={<ProtectedRoute roles={['admin']}><AdminDashboard /></ProtectedRoute>} />
             <Route path="/orders" element={<ProtectedRoute><Orders /></ProtectedRoute>} />
             <Route path="*" element={<NotFound />} />

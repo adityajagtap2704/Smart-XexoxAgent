@@ -173,30 +173,40 @@ const Orders = () => {
                   </div>
                 )}
                 {order.status !== 'pending_payment' && (
-                <><div className="mt-4 flex items-center gap-1 overflow-x-auto pb-1">
-                  {statusSteps.map((step, si) => {
-                    const currentIdx = statusSteps.indexOf(order.status);
-                    const done = si <= currentIdx;
-                    return (
-                      <div key={step} className="flex items-center">
-                        <div className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-medium shrink-0 ${done ? 'sunrise-gradient text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>
-                          {done ? <CheckCircle className="h-3.5 w-3.5" /> : si + 1}
-                        </div>
-                        {si < statusSteps.length - 1 && (
-                          <div className={`h-0.5 w-6 sm:w-10 ${done ? 'bg-primary' : 'bg-muted'}`} />
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="mt-1 flex gap-1 text-[10px] text-muted-foreground overflow-x-auto">
-                  {statusSteps.map((s) => (
-                    <span key={s} className="min-w-[52px] text-center capitalize">
-                      {statusLabels[s] || s}
-                    </span>
-                  ))}
-                </div>
-                </>)}
+                  <div className="mt-6 w-full">
+                    <div className="flex w-full justify-between items-start">
+                      {statusSteps.map((step, si) => {
+                        const currentIdx = statusSteps.indexOf(order.status);
+                        const done = si <= currentIdx;
+                        const isLast = si === statusSteps.length - 1;
+                        const isFirst = si === 0;
+
+                        return (
+                          <div key={step} className="flex flex-col items-center flex-1">
+                            {/* Circle & Line Row */}
+                            <div className="flex items-center w-full">
+                              {/* Left Line Connector (except for first) */}
+                              <div className={`h-0.5 flex-1 ${isFirst ? 'bg-transparent' : (done ? 'bg-primary' : 'bg-muted')}`} />
+                              
+                              {/* Circle Icon */}
+                              <div className={`flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-medium shrink-0 ${done ? 'sunrise-gradient text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>
+                                {done ? <CheckCircle className="h-3.5 w-3.5" /> : si + 1}
+                              </div>
+                              
+                              {/* Right Line Connector (except for last) */}
+                              <div className={`h-0.5 flex-1 ${isLast ? 'bg-transparent' : (si < currentIdx ? 'bg-primary' : 'bg-muted')}`} />
+                            </div>
+
+                            {/* Label */}
+                            <span className={`mt-1 text-[10px] text-center capitalize ${done ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>
+                              {statusLabels[step] || step}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </motion.div>
             ))}
           </div>

@@ -26,6 +26,7 @@ router.get('/:id/retry-payment',  orderController.retryPayment);
 router.get('/:id/print-job',      restrictTo('shopkeeper'),       orderController.getPrintJobStatus);
 router.patch('/:id/print-job',    orderController.updatePrintJob);        // called by agent
 router.post('/:id/resume-print',  restrictTo('shopkeeper'),       orderController.resumePrintJob);
+router.post('/:id/trigger-print', restrictTo('shopkeeper'),       orderController.triggerHardwarePrint);
 router.get('/:id',                orderController.getOrder);
 router.post('/:id/extend',        orderController.extendOrderExpiry);
 router.post('/:id/rate',          orderController.rateOrder);

@@ -57,6 +57,11 @@ export const AuthProvider = ({ children }) => {
     setUser(newUser);
   };
 
+  // Resend registration OTP
+  const resendOTP = async (email) => {
+    await authAPI.resendOTP({ email });
+  };
+
   // Logout
   const logout = () => {
     localStorage.removeItem('token');
@@ -69,7 +74,7 @@ export const AuthProvider = ({ children }) => {
   return (
     <AuthContext.Provider value={{
       user, token, loading,
-      login, register, verifyEmail, verifyOTP, logout,
+      login, register, verifyEmail, verifyOTP, resendOTP, logout,
       isAuthenticated: !!user,
       isAdmin:         user?.role === 'admin',
       isShopkeeper:    user?.role === 'shopkeeper',

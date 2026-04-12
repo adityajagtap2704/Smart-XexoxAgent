@@ -4,7 +4,7 @@ const User = require('../models/User');
 const Payment = require('../models/Payment');
 const { AppError, asyncHandler } = require('../utils/helpers');
 const { createRazorpayOrder } = require('../config/razorpay');
-const { generateQRCode } = require('../utils/qrcode');
+const { generateQRCode, generatePickupCode } = require('../utils/qrcode');
 const { emitToUser, emitToShop, emitToAdmin, emitToAgent } = require('../config/socket');
 const { createNotification } = require('../utils/notifications');
 const { calculateOrderPrice } = require('../utils/pricing');
@@ -12,6 +12,100 @@ const { getPresignedUrl } = require('../config/aws');
 const { sendEmail } = require('../utils/email');
 const logger = require('../config/logger');
 const moment = require('moment');
+
+// ─── Helper: Transition Order to READY + Generate OTP + Notify ────────────────
+// Reused by: markAutoPrinted (print agent), updateOrderStatus (manual),
+//            updatePrintJob (completed checkpoint).
+// Idempotent — skips if order is already 'ready' or 'picked_up'.
+async function transitionToReady(order, userId) {
+  // Guard: only transition from printing or accepted
+  if (!['accepted', 'printing'].includes(order.status)) {
+    logger.info(`transitionToReady skipped — order ${order.orderNumber} is in '${order.status}' state`);
+    return order;
+  }
+
+  // Ensure user + shop are populated
+  if (!order.populated('user')) {
+    await order.populate('user', 'name email phone');
+  }
+  if (!order.populated('shop')) {
+    await order.populate('shop');
+  }
+
+  // Generate OTP only if one doesn't already exist (prevent duplicates)
+  if (!order.pickup?.pickupCode) {
+    const otp    = generatePickupCode(); // 6-digit numeric code
+    const qrData = JSON.stringify({ orderId: order._id, otp, orderNumber: order.orderNumber });
+    let   qrCode = null;
+    try {
+      qrCode = await generateQRCode(qrData);
+    } catch (qrErr) {
+      logger.warn(`QR generation failed for order ${order.orderNumber}: ${qrErr.message}`);
+    }
+
+    if (!order.pickup) order.pickup = {};
+    order.pickup.pickupCode = otp;
+    order.pickup.qrCodeData = qrData;
+    if (qrCode) order.pickup.qrCode = qrCode;
+  }
+
+  const pickupCode = order.pickup.pickupCode;
+
+  // Transition status → ready
+  order.addStatusHistory('ready', 'Auto-marked ready — printing completed', userId);
+  await order.save();
+
+  logger.info(`Order ${order.orderNumber} → READY. OTP: ${pickupCode}`);
+
+  // ── Notify user (in-app notification) ──────────────────────────────────────
+  try {
+    await createNotification({
+      recipient: order.user._id,
+      type:      'order_ready',
+      title:     'Order Ready for Pickup! ✅',
+      message:   `Your order #${order.orderNumber} is ready. Use OTP ${pickupCode} to collect it.`,
+      order:     order._id,
+    });
+  } catch (notifErr) {
+    logger.error(`Notification failed for order ${order.orderNumber}: ${notifErr.message}`);
+  }
+
+  // ── Send OTP email to user ─────────────────────────────────────────────────
+  if (order.user?.email) {
+    try {
+      await sendEmail({
+        to:       order.user.email,
+        template: 'orderReady',
+        data: {
+          name:        order.user.name,
+          orderNumber: order.orderNumber,
+          pickupCode,
+          shopName:    order.shop?.name || '',
+          shopAddress: order.shop?.address || '',
+        },
+      });
+    } catch (emailErr) {
+      logger.error(`Ready email failed for order ${order.orderNumber}: ${emailErr.message}`);
+    }
+  }
+
+  // ── Real-time socket events ────────────────────────────────────────────────
+  emitToUser(order.user._id.toString(), 'order:status_update', {
+    orderId:     order._id,
+    status:      'ready',
+    orderNumber: order.orderNumber,
+    pickupCode,
+  });
+
+  const shopId = order.shop._id?.toString() || order.shop.toString();
+  emitToShop(shopId, 'order:status_update', {
+    orderId:     order._id,
+    status:      'ready',
+    orderNumber: order.orderNumber,
+  });
+
+  return order;
+}
 
 // ─── Create Order ─────────────────────────────────────────────────────────────
 exports.createOrder = asyncHandler(async (req, res) => {
@@ -25,6 +119,33 @@ exports.createOrder = asyncHandler(async (req, res) => {
   if (!documents || documents.length === 0) {
     throw new AppError('At least one document is required', 400);
   }
+
+  // Validate page ranges for each document
+  documents.forEach((doc, docIndex) => {
+    if (!doc.printingRanges || doc.printingRanges.length === 0) {
+      throw new AppError(`Document ${docIndex + 1}: At least one printing range is required`, 400);
+    }
+    
+    const detectedPages = doc.detectedPages || 1;
+    
+    doc.printingRanges.forEach((range, rangeIndex) => {
+      if (!range.rangeStart || !range.rangeEnd) {
+        throw new AppError(`Document ${docIndex + 1}, Range ${rangeIndex + 1}: Page range is required`, 400);
+      }
+      
+      if (range.rangeStart < 1) {
+        throw new AppError(`Document ${docIndex + 1}, Range ${rangeIndex + 1}: Start page must be >= 1`, 400);
+      }
+      
+      if (range.rangeEnd > detectedPages) {
+        throw new AppError(`Document ${docIndex + 1}, Range ${rangeIndex + 1}: End page cannot exceed ${detectedPages}`, 400);
+      }
+      
+      if (range.rangeStart > range.rangeEnd) {
+        throw new AppError(`Document ${docIndex + 1}, Range ${rangeIndex + 1}: Start page must be <= end page`, 400);
+      }
+    });
+  });
 
   const { subtotal, documentPrices, additionalCharge, total, shopReceivable, platformMargin } =
     calculateOrderPrice(documents, shop, additionalServices);
@@ -148,10 +269,20 @@ exports.getShopOrders = asyncHandler(async (req, res) => {
   const { status, page = 1, limit = 50, date } = req.query;
 
   const shop = await Shop.findOne({ owner: req.user.id });
-  if (!shop) throw new AppError('Shop not found for this account', 404);
+  if (!shop) {
+    return res.status(200).json({
+      success: true,
+      data: {
+        orders: [],
+        pagination: { total: 0, page: Number(page), limit: Number(limit), pages: 0 },
+      },
+    });
+  }
 
   const filter = { shop: shop._id };
-  if (status) filter.status = status;
+  if (status) {
+    filter.status = status.includes(',') ? { $in: status.split(',') } : status;
+  }
   if (date) {
     const startOfDay = moment(date).startOf('day').toDate();
     const endOfDay = moment(date).endOf('day').toDate();
@@ -236,7 +367,7 @@ exports.rejectOrder = asyncHandler(async (req, res) => {
   res.status(200).json({ success: true, message: 'Order rejected', data: { order } });
 });
 
-// ─── Update Order Status (printing → ready) ───────────────────────────────────
+// ─── Update Order Status (accepted→printing, printing→ready) ──────────────────
 exports.updateOrderStatus = asyncHandler(async (req, res) => {
   const { status, note } = req.body;
   const validTransitions = {
@@ -255,52 +386,36 @@ exports.updateOrderStatus = asyncHandler(async (req, res) => {
     throw new AppError(`Cannot transition from ${order.status} to ${status}`, 400);
   }
 
+  // ── If transitioning to READY → use the shared helper (generates OTP + notifies) ──
+  if (status === 'ready') {
+    await transitionToReady(order, req.user.id);
+    return res.status(200).json({ success: true, message: 'Order status updated to ready', data: { order } });
+  }
+
+  // ── Otherwise it's accepted→printing — handle normally ──
   order.addStatusHistory(status, note, req.user.id);
   await order.save();
 
-  const notifData = {
-    printing: {
-      title: 'Printing Started 🖨️',
-      message: `Your order #${order.orderNumber} is being printed!`,
-      type: 'order_printing',
-    },
-    ready: {
-      title: 'Order Ready for Pickup! ✅',
-      message: `Your order #${order.orderNumber} is ready. Use OTP ${order.pickup?.pickupCode} to collect it.`,
-      type: 'order_ready',
-    },
-  };
-
-  if (notifData[status]) {
-    await createNotification({ recipient: order.user._id, ...notifData[status], order: order._id });
-  }
-
-  // FIX: When order is ready, send email with OTP to user
-  if (status === 'ready' && order.user?.email && order.pickup?.pickupCode) {
-    try {
-      await sendEmail({
-        to: order.user.email,
-        template: 'orderReady',
-        data: {
-          name: order.user.name,
-          orderNumber: order.orderNumber,
-          pickupCode: order.pickup.pickupCode,
-          shopName: order.shop.name,
-          shopAddress: order.shop.address || '',
-        },
-      });
-    } catch (err) {
-      // Log but don't fail the request if email fails
-      logger.error(`Failed to send ready email for order ${order.orderNumber}: ${err.message}`);
-    }
-  }
+  await createNotification({
+    recipient: order.user._id,
+    type:  'order_printing',
+    title: 'Printing Started 🖨️',
+    message: `Your order #${order.orderNumber} is being printed!`,
+    order: order._id,
+  });
 
   emitToUser(order.user._id.toString(), 'order:status_update', {
     orderId: order._id,
     status,
     orderNumber: order.orderNumber,
-    pickupCode: status === 'ready' ? order.pickup?.pickupCode : undefined,
   });
+
+  if (['accepted', 'printing'].includes(status)) {
+    emitToAgent(order.shop._id.toString(), 'order:accepted', {
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+    });
+  }
 
   res.status(200).json({ success: true, message: `Order status updated to ${status}`, data: { order } });
 });
@@ -317,16 +432,21 @@ exports.verifyPickup = asyncHandler(async (req, res) => {
   if (order.shop.owner.toString() !== req.user.id) throw new AppError('Access denied', 403);
   if (order.status !== 'ready') throw new AppError('Order is not ready for pickup', 400);
 
-  const validCode = pickupCode && order.pickup.pickupCode === pickupCode;
-  const validQR = qrData && order.pickup.qrCodeData === qrData;
+  // Validate OTP or QR code
+  const validCode = pickupCode && order.pickup?.pickupCode === pickupCode;
+  const validQR   = qrData    && order.pickup?.qrCodeData === qrData;
 
   if (!validCode && !validQR) {
     throw new AppError('Invalid OTP or QR code. Please check with customer.', 400);
   }
 
   order.addStatusHistory('picked_up', 'Order picked up by customer — OTP verified', req.user.id);
-  order.pickup.verifiedAt = new Date();
-  order.pickup.verifiedBy = req.user.id;
+  order.pickup.verifiedAt  = new Date();
+  order.pickup.verifiedBy  = req.user.id;
+  // Invalidate OTP — one-time use only
+  order.pickup.pickupCode  = undefined;
+  order.pickup.qrCode      = undefined;
+  order.pickup.qrCodeData  = undefined;
   await order.save();
 
   // Update shop and user stats
@@ -415,80 +535,33 @@ exports.getDocumentUrl = asyncHandler(async (req, res) => {
   res.status(200).json({ success: true, data: { downloadUrl: url, expiresIn: 900 } });
 });
 
-// ─── Mark Auto Printed (called by print agent after printing) ─────────────────
-// This is the NEW endpoint that the Node.js print agent calls after
-// it successfully prints the document on the shop's PC.
-// It auto-advances the order status from accepted → printing,
-// which fires a real-time Socket.IO event to the user's browser.
+// ─── Mark Auto Printed (called by print agent AFTER ALL docs are printed) ─────
+// The print agent calls this once all documents have finished printing.
+// Now auto-transitions directly to READY + generates OTP + sends to user.
 exports.markAutoPrinted = asyncHandler(async (req, res) => {
   const order = await Order.findById(req.params.id)
     .populate('shop')
-    .populate('user', 'name email');
+    .populate('user', 'name email phone');
 
   if (!order) throw new AppError('Order not found', 404);
   if (order.shop.owner.toString() !== req.user.id) throw new AppError('Access denied', 403);
 
-  // Idempotent — if already past accepted, just return success
-  if (order.status !== 'accepted') {
-    return res.status(200).json({ success: true, message: `Order already in ${order.status} state` });
+  // Idempotent — if already ready or picked_up, skip
+  if (['ready', 'picked_up'].includes(order.status)) {
+    return res.status(200).json({ success: true, message: `Order already in ${order.status} state`, data: { order } });
   }
 
-  order.addStatusHistory('printing', 'Document auto-printed by shop print agent', req.user.id);
-  await order.save();
-
-  // Notify user in real-time — status badge updates instantly without page refresh
-  await createNotification({
-    recipient: order.user._id,
-    type: 'order_printing',
-    title: 'Printing Started 🖨️',
-    message: `Your order #${order.orderNumber} is being printed now!`,
-    order: order._id,
-  });
-
-  emitToUser(order.user._id.toString(), 'order:status_update', {
-    orderId: order._id,
-    status: 'printing',
-    orderNumber: order.orderNumber,
-  });
-
-  logger.info(`Order ${order.orderNumber} auto-printed by shop agent`);
-  res.status(200).json({ success: true, message: 'Status updated to printing', data: { order } });
-});
-
-// ─── Mark Auto Printed (called by print-agent after printing) ─────────────────
-exports.markAutoPrinted = asyncHandler(async (req, res) => {
-  const order = await Order.findById(req.params.id)
-    .populate('shop')
-    .populate('user', 'name email');
-
-  if (!order) throw new AppError('Order not found', 404);
-  if (order.shop.owner.toString() !== req.user.id) throw new AppError('Access denied', 403);
-
-  // Idempotent — if already printing or beyond, just return success
-  if (order.status !== 'accepted') {
-    return res.status(200).json({ success: true, message: 'Order already past accepted state', data: { order } });
+  // If still in accepted state, add printing to history first (for audit trail)
+  if (order.status === 'accepted') {
+    order.addStatusHistory('printing', 'All documents auto-printed by print agent', req.user.id);
+    await order.save();
   }
 
-  order.addStatusHistory('printing', 'Auto-printed by print agent', req.user.id);
-  await order.save();
+  // Now auto-transition printing → ready (generates OTP + notifies user)
+  await transitionToReady(order, req.user.id);
 
-  // Push real-time update to user — their screen changes to "Printing" instantly
-  await createNotification({
-    recipient: order.user._id,
-    type: 'order_printing',
-    title: 'Printing Started 🖨️',
-    message: `Your order #${order.orderNumber} is now being printed!`,
-    order: order._id,
-  });
-
-  emitToUser(order.user._id.toString(), 'order:status_update', {
-    orderId: order._id,
-    status: 'printing',
-    orderNumber: order.orderNumber,
-  });
-
-  logger.info(`Order ${order.orderNumber} auto-printed by agent, status → printing`);
-  res.status(200).json({ success: true, message: 'Status updated to printing', data: { order } });
+  logger.info(`Order ${order.orderNumber} auto-printed → READY by print agent`);
+  res.status(200).json({ success: true, message: 'Printing complete — order is READY with OTP sent', data: { order } });
 });
 
 
@@ -561,6 +634,10 @@ exports.updatePrintJob = asyncHandler(async (req, res) => {
       orderNumber: order.orderNumber,
       message:     'All pages printed successfully.',
     });
+    // NOTE: The actual printing→ready transition + OTP is handled by
+    // markAutoPrinted (called by the agent after ALL docs finish).
+    // We don't auto-transition here because this checkpoint fires
+    // per-document and would trigger prematurely on multi-doc orders.
   }
 
   res.status(200).json({ success: true, data: { printJob: order.printJob } });
@@ -581,6 +658,21 @@ exports.getPrintJobStatus = asyncHandler(async (req, res) => {
       documents:      order.documents,
     },
   });
+});
+
+// ─── Trigger Hardware Print Agent Manually ──────────────────────────────────────
+exports.triggerHardwarePrint = asyncHandler(async (req, res) => {
+  const order = await Order.findById(req.params.id).populate('shop');
+  if (!order) throw new AppError('Order not found', 404);
+  if (order.shop.owner.toString() !== req.user.id) throw new AppError('Access denied', 403);
+
+  const { emitToAgent } = require('../config/socket');
+  emitToAgent(order.shop._id.toString(), 'print:trigger', {
+    orderId: order._id,
+    orderNumber: order.orderNumber,
+  });
+
+  res.status(200).json({ success: true, message: 'Print signal sent to your Desktop Print Agent!' });
 });
 
 // ─── Resume Print Job (shopkeeper clicks Resume after adding paper) ───────────

@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { orderAPI, paymentAPI, uploadAPI } from '@/lib/api';
-import { onOrderUpdate, onPaymentSuccess, joinOrderRoom } from '@/lib/socket';
+import { orderAPI, paymentAPI, shopAPI, uploadAPI } from '@/lib/api';
+import { onOrderUpdate, onPaymentSuccess, joinOrderRoom, joinShopRoom, onShopStatusUpdate } from '@/lib/socket';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { motion } from 'framer-motion';
-import { Upload, FileText, Package, X, Loader2 } from 'lucide-react';
+import { Upload, FileText, Package, X, Loader2, Plus, Trash2 } from 'lucide-react';
 import Navbar from '@/components/layout/Navbar';
 import Footer from '@/components/layout/Footer';
 
@@ -35,10 +35,6 @@ const statusLabels = {
   expired:         'Expired',
 };
 
-// Hardcoded AISSMS shop — only one shop in the system
-const SHOP_ID   = '69bd47f623f7b2a6b4e6b937';
-const SHOP_NAME = 'AISSMS College Xerox Centre';
-
 const UserDashboard = () => {
   const { user } = useAuth();
   const [orders, setOrders]         = useState([]);
@@ -48,12 +44,126 @@ const UserDashboard = () => {
 
   // New order form state
   const [file, setFile]             = useState(null);
-  const [copies, setCopies]         = useState(1);
-  const [colorType, setColorType]   = useState('bw');
-  const [paperSize, setPaperSize]   = useState('A4');
-  const [doubleSided, setDoubleSided]   = useState(false);
+  const [fileData, setFileData]     = useState(null);  // Stores: { s3Url, s3Key, fileSize, detectedPages }
+  const [shopInfo, setShopInfo]     = useState(null);
+  const [configs, setConfigs]       = useState([{ id: Date.now(), rangeStart: 1, rangeEnd: 1, copies: 1, colorMode: 'bw', sides: 'single' }]);
   const [submitting, setSubmitting] = useState(false);
   const [uploadStep, setUploadStep] = useState('');
+  const [spiralBinding, setSpiralBinding] = useState(false);
+  const [filePageCount, setFilePageCount] = useState(null);
+  const [manualCountRequired, setManualCountRequired] = useState(false);
+  const [manualCountConfirmed, setManualCountConfirmed] = useState(false);
+
+  // Get shop ID from user (auto-linked during registration)
+  const SHOP_ID = user?.shop?._id || user?.shop || null;
+  const shopId = SHOP_ID ? String(SHOP_ID) : null;
+
+  const effectivePageCount = filePageCount || 1;
+
+  useEffect(() => {
+    const loadShopInfo = async () => {
+      if (!shopId) {
+        setShopInfo(null);
+        return;
+      }
+      try {
+        const res = await shopAPI.getById(shopId);
+        setShopInfo(res.data.data?.shop || res.data?.shop || res.data || null);
+      } catch {
+        setShopInfo(null);
+      }
+    };
+    loadShopInfo();
+  }, [shopId]);
+
+  useEffect(() => {
+    if (!shopId) return;
+    const cleanup = onShopStatusUpdate((payload) => {
+      if (payload?.isOpen === undefined) return;
+      setShopInfo((prev) => prev ? { ...prev, isOpen: payload.isOpen } : prev);
+      toast(`${payload.isOpen ? 'Shop is now open' : 'Shop is now closed'}`);
+    });
+    joinShopRoom(shopId);
+    return cleanup;
+  }, [shopId]);
+
+  const addConfig = () => {
+    setConfigs([...configs, { id: Date.now(), rangeStart: 1, rangeEnd: effectivePageCount, copies: 1, colorMode: 'bw', sides: 'single' }]);
+  };
+
+  const handleManualPageCountChange = (value) => {
+    const pages = Number(value) || 0;
+    setFilePageCount(pages > 0 ? pages : null);
+    setConfigs([{ id: Date.now(), rangeStart: 1, rangeEnd: pages > 0 ? pages : 1, copies: 1, colorMode: 'bw', sides: 'single' }]);
+    if (manualCountConfirmed) {
+      setManualCountConfirmed(false);
+    }
+  };
+
+  const removeConfig = (id) => {
+    if (configs.length > 1) {
+      setConfigs(configs.filter(c => c.id !== id));
+    }
+  };
+
+  const updateConfig = (id, field, value) => {
+    setConfigs(configs.map(c => c.id === id ? { ...c, [field]: value } : c));
+  };
+
+  // Auto-upload file when selected to detect pages
+  const handleFileSelect = async (selectedFile) => {
+    if (!selectedFile) {
+      setFile(null);
+      setFileData(null);
+      setFilePageCount(null);
+      return;
+    }
+
+    setFile(selectedFile);
+    setUploadStep('Detecting pages...');
+    
+    try {
+      const uploadRes = await uploadAPI.uploadFile(selectedFile);
+      const doc = uploadRes.data.data || uploadRes.data;
+      const detectedPages = doc.detectedPages || 0;
+      const isWord = selectedFile?.name?.toLowerCase().endsWith('.docx') || selectedFile?.name?.toLowerCase().endsWith('.doc');
+      const manualRequired = Boolean(doc.manualCountRequired || (isWord && detectedPages === 0));
+
+      // Store the uploaded file info for later use
+      setFileData({
+        s3Url: doc.s3Url,
+        s3Key: doc.s3Key,
+        fileSize: doc.fileSize || selectedFile.size,
+        detectedPages,
+      });
+      setManualCountRequired(manualRequired);
+      setUploadStep('');
+
+      if (detectedPages > 0) {
+        setFilePageCount(detectedPages);
+        setConfigs([{ id: Date.now(), rangeStart: 1, rangeEnd: detectedPages, copies: 1, colorMode: 'bw', sides: 'single' }]);
+        toast.success(`✅ ${detectedPages} pages detected`);
+      } else if (manualRequired) {
+        setFilePageCount(null);
+        setManualCountConfirmed(false);
+        setConfigs([{ id: Date.now(), rangeStart: 1, rangeEnd: 1, copies: 1, colorMode: 'bw', sides: 'single' }]);
+        toast('Please enter total pages for DOC/DOCX file before placing the order.');
+      } else {
+        setFile(null);
+        setFileData(null);
+        setFilePageCount(null);
+        setConfigs([{ id: Date.now(), rangeStart: 1, rangeEnd: 1, copies: 1, colorMode: 'bw', sides: 'single' }]);
+        toast.error('Page count could not be detected. Please upload a supported document.');
+      }
+    } catch (err) {
+      setUploadStep('');
+      setFile(null);
+      setFileData(null);
+      setFilePageCount(null);
+      setManualCountRequired(false);
+      toast.error(err.response?.data?.message || 'Failed to upload file');
+    }
+  };
 
   const fetchOrders = useCallback(async () => {
     try {
@@ -89,32 +199,84 @@ const UserDashboard = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!file) {
-      toast.error('Please select a file to upload');
+    if (!file || !fileData) {
+      toast.error('Please upload a document first');
       return;
     }
-    setSubmitting(true);
-    try {
-      // STEP 1 — Upload file to S3
-      setUploadStep('Uploading document...');
-      const uploadRes = await uploadAPI.uploadFile(file);
-      const doc = uploadRes.data.data || uploadRes.data;
+    if (!SHOP_ID) {
+      toast.error('Error: Shop not found. Please try logging in again.');
+      return;
+    }
 
-      // STEP 2 — Create order
+    setSubmitting(true);
+    setUploadStep('');
+    
+    try {
+      const totalPages = filePageCount;
+
+      if (manualCountRequired && !manualCountConfirmed) {
+        toast.error('Please confirm the manual page count before placing the order.');
+        setSubmitting(false);
+        return;
+      }
+
+      if (!totalPages || totalPages <= 0) {
+        toast.error(manualCountRequired ? 'Please enter the total number of pages for your DOC/DOCX file.' : 'Page count was not detected. Upload a supported DOC/DOCX/PDF file.');
+        setSubmitting(false);
+        return;
+      }
+
+      if (shopInfo && shopInfo.isOpen === false) {
+        toast.error('This shop is currently closed. Please place your order when the shop is open.');
+        setSubmitting(false);
+        return;
+      }
+      
+      // Validate page ranges
+      for (let [index, config] of configs.entries()) {
+        if (config.rangeStart === '' || config.rangeEnd === '' || config.copies === '') {
+          toast.error(`Required fields are missing for page range ${index + 1}. Please fill Start Page, End Page, and Copies.`);
+          setSubmitting(false);
+          return;
+        }
+
+        if (config.rangeStart < 1 || config.rangeEnd > totalPages || config.rangeStart > config.rangeEnd) {
+          toast.error(`Invalid page range: ${config.rangeStart}-${config.rangeEnd} (document has ${totalPages} pages)`);
+          setSubmitting(false);
+          return;
+        }
+
+        if (config.copies < 1 || config.copies > 100) {
+          toast.error(`Copies must be between 1 and 100 for page range ${index + 1}.`);
+          setSubmitting(false);
+          return;
+        }
+      }
+
       setUploadStep('Creating order...');
       const orderRes = await orderAPI.create({
-        shopId: SHOP_ID,
+        shopId: shopId,
         documents: [{
           originalName: file.name,
-          s3Url:        doc.s3Url,
-          s3Key:        doc.s3Key,
-          fileSize:     file.size,
-          pages:        doc.detectedPages || 1,
-          colorType,
-          paperSize,
-          copies,
-          doubleSided,
+          s3Url:        fileData.s3Url,
+          s3Key:        fileData.s3Key,
+          fileSize:     fileData.fileSize,
+          detectedPages: totalPages,
+          printingOptions: {
+            paperSize: 'A4',
+            orientation: 'auto',
+          },
+          printingRanges: configs.map(c => ({
+            rangeStart: c.rangeStart,
+            rangeEnd: c.rangeEnd,
+            copies: c.copies,
+            colorMode: c.colorMode,
+            sides: c.sides,
+          })),
         }],
+        additionalServices: {
+          spiralBinding,
+        },
       });
 
       const { order, razorpay } = orderRes.data.data;
@@ -161,7 +323,10 @@ const UserDashboard = () => {
       const rzp = new window.Razorpay(options);
       rzp.open();
       setFile(null);
-      setCopies(1);
+      setFileData(null);
+      setFilePageCount(null);
+      setSpiralBinding(false);
+      setConfigs([{ id: Date.now(), rangeStart: 1, rangeEnd: 1, copies: 1, colorMode: 'bw', sides: 'single' }]);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to place order');
     } finally {
@@ -170,9 +335,22 @@ const UserDashboard = () => {
     }
   };
 
+  // Calculate frontend cost estimate
   const estimatedCost = () => {
-    const rate = colorType === 'color' ? 5 : 1;
-    return (rate * copies).toFixed(2);
+    let cost = 0;
+    configs.forEach(c => {
+      const start = Number(c.rangeStart) || 0;
+      const end = Number(c.rangeEnd) || 0;
+      const pagesInRange = Math.max(end - start + 1, 0);
+      const rate = c.colorMode === 'color' ? 5 : 1;
+      const effectiveSheets = c.sides === 'double' ? Math.ceil(pagesInRange / 2) : pagesInRange;
+      cost += rate * effectiveSheets * (Number(c.copies) || 0);
+    });
+    // Add spiral binding estimate: ₹30 per document
+    if (spiralBinding) {
+      cost += 30;
+    }
+    return cost.toFixed(2);
   };
 
   return (
@@ -207,63 +385,277 @@ const UserDashboard = () => {
                   <input
                     type="file"
                     accept=".pdf,.doc,.docx,.jpg,.png"
-                    onChange={(e) => setFile(e.target.files?.[0] || null)}
+                    onChange={(e) => handleFileSelect(e.target.files?.[0] || null)}
                     className="hidden"
                     id="file-upload"
+                    disabled={uploadStep !== ''}
                   />
-                  <label htmlFor="file-upload" className="cursor-pointer">
+                  <label htmlFor="file-upload" className="cursor-pointer flex flex-col items-center">
                     <Upload className="mx-auto h-10 w-10 text-muted-foreground mb-2" />
                     <p className="text-sm text-muted-foreground">
-                      {file ? file.name : 'Click to upload or drag & drop'}
+                      {uploadStep ? uploadStep : (file ? `✅ ${file.name}` : 'Click to upload or drag & drop')}
                     </p>
                     <p className="text-xs text-muted-foreground mt-1">PDF, DOC, JPG, PNG (Max 20MB)</p>
                   </label>
                 </div>
               </div>
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <Label>Copies</Label>
-                  <Input type="number" min={1} max={100} value={copies} onChange={(e) => setCopies(Number(e.target.value))} className="mt-1.5" />
-                </div>
-                <div>
-                  <Label>Color Type</Label>
-                  <div className="mt-1.5 grid grid-cols-2 gap-2">
-                    {['bw','color'].map((t) => (
-                      <button key={t} type="button" onClick={() => setColorType(t)}
-                        className={`rounded-lg border px-3 py-2 text-sm font-medium transition-all ${colorType === t ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground'}`}>
-                        {t === 'bw' ? 'B&W' : 'Color'}
-                      </button>
-                    ))}
+              {manualCountRequired && (
+                <div className="rounded-xl border border-yellow-300 bg-yellow-50 p-4 text-sm text-yellow-800 space-y-3">
+                  <p className="font-medium">Please enter the total number of pages for your DOC/DOCX file.</p>
+                  <p className="text-xs text-yellow-700">If this value is wrong, the order will use the page count you provide and printed pages may be incomplete or incorrect.</p>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <Label>Total Pages</Label>
+                      <Input
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        value={filePageCount ?? ''}
+                        onChange={(e) => handleManualPageCountChange(e.target.value)}
+                        className="mt-1 text-sm"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="confirm-manual-pages"
+                      type="checkbox"
+                      checked={manualCountConfirmed}
+                      onChange={(e) => setManualCountConfirmed(e.target.checked)}
+                      className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
+                    />
+                    <label htmlFor="confirm-manual-pages" className="text-sm text-yellow-900">
+                      I confirm this page count is correct for my document.
+                    </label>
                   </div>
                 </div>
-                <div>
-                  <Label>Paper Size</Label>
-                  <div className="mt-1.5 grid grid-cols-3 gap-2">
-                    {['A4','A3','Letter'].map((s) => (
-                      <button key={s} type="button" onClick={() => setPaperSize(s)}
-                        className={`rounded-lg border px-3 py-2 text-sm font-medium transition-all ${paperSize === s ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground'}`}>
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <Label>Print Sides</Label>
-                  <div className="mt-1.5 grid grid-cols-2 gap-2">
-                    {[false,true].map((d) => (
-                      <button key={String(d)} type="button" onClick={() => setDoubleSided(d)}
-                        className={`rounded-lg border px-3 py-2 text-sm font-medium transition-all ${doubleSided === d ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground'}`}>
-                        {d ? 'Double' : 'Single'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
+              )}
 
-              <div className="rounded-xl bg-secondary/50 border border-border px-4 py-3 flex items-center justify-between text-sm">
-                <span className="text-muted-foreground font-medium">📍 Shop</span>
-                <span className="font-semibold">{SHOP_NAME}</span>
+              {/* Advanced Range-Based Printing Options */}
+              {filePageCount && (
+                <div className="space-y-4">
+                  <div className="rounded-xl bg-blue-500/10 border border-blue-500/30 p-4">
+                    <p className="text-sm text-blue-700 dark:text-blue-400">
+                      📄 <strong>{filePageCount} pages detected</strong> - Configure printing options for each page range
+                    </p>
+                  </div>
+
+                  {/* Spi Binding Toggle */}
+                  <div className="flex items-center gap-3 rounded-lg border border-border p-4 bg-secondary/20">
+                    <input
+                      type="checkbox"
+                      id="spiral-binding"
+                      checked={spiralBinding}
+                      onChange={(e) => setSpiralBinding(e.target.checked)}
+                      className="h-5 w-5 rounded border-border cursor-pointer"
+                    />
+                    <label htmlFor="spiral-binding" className="cursor-pointer flex-1">
+                      <p className="font-medium">Add Spiral Binding</p>
+                      <p className="text-xs text-muted-foreground">₹30 - Durable binding for all pages</p>
+                    </label>
+                    {spiralBinding && <span className="text-sm font-semibold text-primary">+₹30</span>}
+                  </div>
+
+                  {/* Per-Range Configurations */}
+                  {configs.map((config, index) => (
+                    <div key={config.id} className="relative rounded-xl border border-border p-5 bg-secondary/30">
+                      <div className="flex items-center justify-between mb-4 border-b border-border/50 pb-3">
+                        <div>
+                          <h4 className="font-semibold text-primary">Page Range {index + 1}</h4>
+                          <p className="text-xs text-muted-foreground">Configure this section individually</p>
+                        </div>
+                        {configs.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => removeConfig(config.id)}
+                            className="text-red-500 hover:text-red-600 transition-colors p-2"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="grid gap-4 sm:grid-cols-4">
+                        {/* Range Start */}
+                        <div>
+                          <Label className="text-xs">Start Page</Label>
+                          <Input
+                            type="number"
+                            inputMode="numeric"
+                            min={1}
+                            max={filePageCount}
+                            value={config.rangeStart}
+                            required
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              if (raw === '') {
+                                updateConfig(config.id, 'rangeStart', '');
+                                return;
+                              }
+                              const val = Number(raw);
+                              const maxEnd = config.rangeEnd === '' ? filePageCount : Number(config.rangeEnd);
+                              if (!Number.isNaN(val) && val >= 1 && val <= filePageCount && val <= maxEnd) {
+                                updateConfig(config.id, 'rangeStart', val);
+                              }
+                            }}
+                            className="mt-1 text-sm"
+                          />
+                        </div>
+
+                        {/* Range End */}
+                        <div>
+                          <Label className="text-xs">End Page</Label>
+                          <Input
+                            type="number"
+                            inputMode="numeric"
+                            min={config.rangeStart || 1}
+                            max={effectivePageCount}
+                            value={config.rangeEnd}
+                            required
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              if (raw === '') {
+                                updateConfig(config.id, 'rangeEnd', '');
+                                return;
+                              }
+                              const val = Number(raw);
+                              const minStart = config.rangeStart === '' ? 1 : Number(config.rangeStart);
+                              if (!Number.isNaN(val) && val >= minStart && val <= effectivePageCount) {
+                                updateConfig(config.id, 'rangeEnd', val);
+                              }
+                            }}
+                            className="mt-1 text-sm"
+                          />
+                        </div>
+
+                        {/* Copies */}
+                        <div>
+                          <Label className="text-xs">Copies</Label>
+                          <Input
+                            type="number"
+                            inputMode="numeric"
+                            min={1}
+                            max={100}
+                            value={config.copies}
+                            required
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              if (raw === '') {
+                                updateConfig(config.id, 'copies', '');
+                                return;
+                              }
+                              const val = Number(raw);
+                              if (!Number.isNaN(val) && val >= 1 && val <= 100) {
+                                updateConfig(config.id, 'copies', val);
+                              }
+                            }}
+                            className="mt-1 text-sm"
+                          />
+                        </div>
+
+                        {/* Sides */}
+                        <div>
+                          <Label className="text-xs">Print Sides</Label>
+                          <div className="mt-1 grid grid-cols-2 gap-2">
+                            {['single', 'double'].map((side) => (
+                              <button
+                                key={side}
+                                type="button"
+                                onClick={() => updateConfig(config.id, 'sides', side)}
+                                className={`rounded border px-2 py-1.5 text-xs font-medium transition-all ${
+                                  config.sides === side
+                                    ? 'border-primary bg-primary/20 text-primary'
+                                    : 'border-border text-muted-foreground hover:bg-secondary'
+                                }`}
+                              >
+                                {side === 'single' ? 'Single' : 'Double'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Color Mode - Full Width */}
+                        <div className="sm:col-span-4">
+                          <Label className="text-xs">Color Mode</Label>
+                          <div className="mt-1 grid grid-cols-2 gap-3">
+                            {['bw', 'color'].map((mode) => (
+                              <button
+                                key={mode}
+                                type="button"
+                                onClick={() => updateConfig(config.id, 'colorMode', mode)}
+                                className={`rounded-lg border-2 px-4 py-2 text-sm font-medium transition-all ${
+                                  config.colorMode === mode
+                                    ? 'border-primary bg-primary/10 text-primary'
+                                    : 'border-border text-muted-foreground hover:bg-secondary'
+                                }`}
+                              >
+                                {mode === 'bw' ? '⬛ B&W (₹1/sheet)' : '🌈 Color (₹5/sheet)'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Range Summary - Enhanced Visual */}
+                        <div className="sm:col-span-4 rounded-lg border-2 p-4 transition-all" style={{
+                          borderColor: config.colorMode === 'color' ? '#ef4444' : '#6b7280',
+                          backgroundColor: config.colorMode === 'color' ? '#fef2f2' : '#f9fafb'
+                        }}>
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                            <div className="text-center">
+                              <p className="text-xs text-muted-foreground font-medium mb-1">Pages</p>
+                              <p className="font-bold text-sm">{config.rangeStart || '?'}-{config.rangeEnd || '?'}</p>
+                              <p className="text-xs text-muted-foreground mt-0.5">({Math.max(Number(config.rangeEnd) - Number(config.rangeStart) + 1, 0)} pages)</p>
+                            </div>
+                            <div className="text-center">
+                              <p className="text-xs text-muted-foreground font-medium mb-1">Copies</p>
+                              <p className="font-bold text-sm">{Number(config.copies) || '?'}x</p>
+                            </div>
+                            <div className="text-center">
+                              <p className="text-xs text-muted-foreground font-medium mb-1">Color</p>
+                              <p className="font-bold text-sm">{config.colorMode === 'color' ? '🌈 Color' : '⬛ B&W'}</p>
+                            </div>
+                            <div className="text-center">
+                              <p className="text-xs text-muted-foreground font-medium mb-1">Sides</p>
+                              <p className="font-bold text-sm">{config.sides === 'double' ? '📄📄 Double' : '📄 Single'}</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full border-dashed flex items-center gap-2 text-muted-foreground hover:text-primary transition-colors"
+                    onClick={addConfig}
+                    disabled={!effectivePageCount}
+                  >
+                    <Plus className="h-4 w-4" /> Add Another Page Range
+                  </Button>
+                </div>
+              )}
+
+              {/* Help Text */}
+
+              <div className="rounded-xl bg-secondary/50 border border-border px-4 py-3 space-y-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground font-medium">📍 Shop</span>
+                  <span className="font-semibold">{shopInfo?.name || (SHOP_ID ? 'AISSMS College Xerox Centre' : '⚠️ Shop not linked')}</span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-muted-foreground">{SHOP_ID ? 'Shop availability' : 'No shop selected'}</span>
+                  {SHOP_ID ? (
+                    shopInfo ? (
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${shopInfo.isOpen ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                        {shopInfo.isOpen ? '🟢 Open' : '🔴 Closed'}
+                      </span>
+                    ) : (
+                      <span className="rounded-full px-2 py-0.5 text-xs font-medium bg-secondary text-muted-foreground">Checking status...</span>
+                    )
+                  ) : null}
+                </div>
               </div>
 
               <div className="flex items-center justify-between rounded-xl bg-secondary p-4">
@@ -271,8 +663,16 @@ const UserDashboard = () => {
                 <span className="font-heading text-xl font-bold text-primary">₹{estimatedCost()}</span>
               </div>
 
-              <Button type="submit" className="w-full sunrise-gradient text-primary-foreground sunrise-shadow-sm" disabled={submitting}>
-                {submitting
+              <Button
+                type="submit"
+                className="w-full sunrise-gradient text-primary-foreground sunrise-shadow-sm"
+                disabled={submitting || !SHOP_ID || shopInfo?.isOpen === false}
+              >
+                {!SHOP_ID
+                  ? '⚠️ Shop Not Found'
+                  : shopInfo?.isOpen === false
+                  ? '🔴 Shop Closed'
+                  : submitting
                   ? <span className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />{uploadStep || 'Processing...'}</span>
                   : 'Place Order & Pay'}
               </Button>

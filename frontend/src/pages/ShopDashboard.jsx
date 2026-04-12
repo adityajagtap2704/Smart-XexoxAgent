@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { shopAPI, orderAPI } from '@/lib/api';
 import { onOrderUpdate, getSocket } from '@/lib/socket';
@@ -38,7 +39,8 @@ const statusLabel = {
 };
 
 const ShopDashboard = () => {
-  const { user } = useAuth();
+  const { user, token } = useAuth();
+  const navigate = useNavigate();
   const [orders, setOrders]         = useState([]);
   const [activeTab, setActiveTab]   = useState('queue');
   const [loading, setLoading]       = useState(true);
@@ -132,6 +134,17 @@ const ShopDashboard = () => {
       fetchOrders(true);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to resume');
+    }
+  };
+
+  // ── Desktop Print Trigger ──────────────────────────────────────────────────
+  const handleDesktopPrint = async (orderId) => {
+    try {
+      await updateStatus(orderId, 'printing');
+      window.location.href = `smartxerox://print/${orderId}`;
+      toast.success('Opening Desktop Print Agent...');
+    } catch (err) {
+      toast.error('Failed to trigger desktop agent');
     }
   };
 
@@ -251,12 +264,40 @@ const ShopDashboard = () => {
     );
     if (order.status === 'accepted') return (
       <div className="flex flex-col items-end gap-1">
-        <Button size="sm" className="bg-purple-600 hover:bg-purple-700 text-white" onClick={() => updateStatus(order._id, 'printing')}>Start Printing</Button>
-        <span className="text-[10px] text-muted-foreground">or wait for auto-print</span>
+        <Button size="sm" className="bg-purple-600 hover:bg-purple-700 text-white" onClick={() => handleDesktopPrint(order._id)}>
+          <Printer className="h-3.5 w-3.5 mr-1" /> Start Printing (Desktop)
+        </Button>
+        <button 
+          className="text-[10px] text-muted-foreground underline underline-offset-2 hover:text-primary"
+          onClick={() => navigate(`/shop/print/${order._id}`)}
+        >
+          or use Web Print Interface
+        </button>
       </div>
     );
     if (order.status === 'printing') return (
-      <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={() => updateStatus(order._id, 'ready')}>Mark Ready</Button>
+      <div className="flex flex-col items-end gap-1">
+        <div className="flex items-center gap-2 text-sm text-purple-700 font-medium">
+          <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+          <span>Printing{order.printJob?.printedPages > 0 ? ` (${order.printJob.printedPages}/${order.printJob.totalPages} pages)` : '...'}</span>
+        </div>
+        <div className="flex flex-col items-end">
+          <span className="text-[10px] text-muted-foreground">Auto-ready + OTP when done</span>
+          <button 
+            className="text-[10px] text-primary underline underline-offset-2 hover:opacity-75 mt-1"
+            onClick={() => updateStatus(order._id, 'ready')}
+          >
+            Mark Ready manually
+          </button>
+        </div>
+
+        {/* Print job paused — show resume button */}
+        {order.printJob?.status === 'paused' && (
+          <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white mt-1" onClick={() => handleResumePrint(order._id)}>
+            ▶ Resume Print
+          </Button>
+        )}
+      </div>
     );
     if (order.status === 'ready') return (
       <Button size="sm" className="bg-orange-500 hover:bg-orange-600 text-white" onClick={() => setExpandedId(expandedId === order._id ? null : order._id)}>
@@ -302,12 +343,31 @@ const ShopDashboard = () => {
         </div>
 
         {/* Auto-print banner */}
-        <div className="mb-6 rounded-xl bg-blue-50 border border-blue-200 px-4 py-3 text-sm text-blue-800 flex items-start gap-2">
-          <Printer className="h-4 w-4 mt-0.5 shrink-0" />
-          <span>
-            <strong>Auto-print active</strong> — when you click Accept, the print agent will automatically
-            print the document. If not running, use the <strong>Download & Print</strong> fallback link.
-          </span>
+        <div className="mb-6 rounded-xl bg-blue-50 border border-blue-200 px-4 py-3 text-sm text-blue-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-2">
+            <Printer className="h-4 w-4 mt-0.5 shrink-0" />
+            <span>
+              <strong>Desktop Print Agent</strong> — The fastest way to handle orders. Install the Windows app, connect it once, and let it auto-print and auto-verify every order instantly.
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Download Button */}
+            <a 
+              href="https://github.com/your-username/smartxerox/releases/latest/download/Smart-Xerox-Print-Agent-Setup-1.0.0.exe" 
+              className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg bg-white border border-blue-200 hover:bg-blue-100 transition-colors"
+            >
+              <Download className="h-3 w-3" /> Download .exe
+            </a>
+            
+            {/* Connect / Auto-login Button */}
+            <a 
+              href={`smartxerox://autologin?token=${token}&email=${encodeURIComponent(user?.email || '')}&name=${encodeURIComponent(user?.name || '')}&shopName=${encodeURIComponent(myShop?.name || '')}`}
+              className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg bg-blue-600 text-white shadow-sm hover:bg-blue-700 transition-colors"
+              onClick={() => toast.success('Opening Print Agent...')}
+            >
+              <ToggleRight className="h-3 w-3" /> Connect Agent
+            </a>
+          </div>
         </div>
 
         {/* Tabs */}
@@ -364,8 +424,8 @@ const ShopDashboard = () => {
 
                     {['accepted', 'printing', 'ready'].includes(order.status) && order.documents?.[0] && (
                       <button className="mt-2 text-xs text-primary underline underline-offset-2 hover:opacity-75 flex items-center gap-1"
-                        onClick={() => handleDownload(order._id, order.documents[0]._id)}>
-                        <Download className="h-3 w-3" /> Download & Print manually (fallback)
+                        onClick={() => navigate(`/shop/print/${order._id}`)}>
+                        <Printer className="h-3 w-3" /> Open Web Print Interface
                       </button>
                     )}
                   </div>

@@ -161,28 +161,7 @@ const Register = () => {
                     </p>
                   </div>
 
-                  <div>
-                    <Label>Register as</Label>
-                    <div className="mt-1.5 grid grid-cols-2 gap-2">
-                      {[
-                        { value: 'user',       label: 'User'       },
-                        { value: 'shopkeeper', label: 'Shop Owner' },
-                      ].map((r) => (
-                        <button
-                          key={r.value}
-                          type="button"
-                          onClick={() => update('role', r.value)}
-                          className={`rounded-lg border px-3 py-2 text-sm font-medium transition-all ${
-                            form.role === r.value
-                              ? 'border-primary bg-primary/10 text-primary'
-                              : 'border-border text-muted-foreground hover:border-primary/50'
-                          }`}
-                        >
-                          {r.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+
 
                   <Button type="submit" className="w-full sunrise-gradient text-primary-foreground sunrise-shadow-sm" disabled={loading}>
                     {loading ? 'Creating account...' : 'Create Account'}

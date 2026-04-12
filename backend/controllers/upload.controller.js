@@ -1,6 +1,6 @@
 const { upload, getPresignedUrl } = require('../config/aws');
 const { AppError, asyncHandler } = require('../utils/helpers');
-const { countPDFPages } = require('../utils/pdfUtils');
+const { countFilePages } = require('../utils/pdfUtils');
 const logger = require('../config/logger');
 
 // ─── Upload Document to S3 ────────────────────────────────────────────────────
@@ -11,15 +11,17 @@ exports.uploadDocument = asyncHandler(async (req, res) => {
   const s3Key = file.key;
   const s3Url = file.location;
 
-  // Try to count pages for PDF
+  // Try to count pages for supported file types
   let detectedPages = 0;
-  if (file.mimetype === 'application/pdf') {
-    try {
-      detectedPages = await countPDFPages(file);
-    } catch (err) {
-      logger.warn(`Page count failed for ${file.originalname}: ${err.message}`);
-    }
+  try {
+    detectedPages = await countFilePages(file);
+  } catch (err) {
+    logger.warn(`Page count failed for ${file.originalname}: ${err.message}`);
   }
+
+  const docExt = (file.originalname || '').toLowerCase();
+  const isWord = docExt.endsWith('.docx') || docExt.endsWith('.doc') || file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || file.mimetype === 'application/msword';
+  const manualCountRequired = isWord && detectedPages === 0;
 
   res.status(200).json({
     success: true,
@@ -31,9 +33,12 @@ exports.uploadDocument = asyncHandler(async (req, res) => {
       fileSize: file.size,
       mimeType: file.mimetype,
       detectedPages,
+      manualCountRequired,
       disclaimer: detectedPages > 0
         ? 'Page count is auto-detected. Final printed page count may vary due to formatting differences.'
-        : null,
+        : manualCountRequired
+          ? 'Please enter total pages manually for DOC/DOCX files.'
+          : null,
     },
   });
 });
@@ -45,12 +50,10 @@ exports.uploadMultipleDocuments = asyncHandler(async (req, res) => {
   const uploadedFiles = await Promise.all(
     req.files.map(async (file) => {
       let detectedPages = 0;
-      if (file.mimetype === 'application/pdf') {
-        try {
-          detectedPages = await countPDFPages(file);
-        } catch (err) {
-          logger.warn(`Page count failed for ${file.originalname}: ${err.message}`);
-        }
+      try {
+        detectedPages = await countFilePages(file);
+      } catch (err) {
+        logger.warn(`Page count failed for ${file.originalname}: ${err.message}`);
       }
       return {
         originalName: file.originalname,

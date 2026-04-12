@@ -66,12 +66,20 @@ const initSocket = (server) => {
       socket.join('admin:room');
     }
 
-    // ── Shopkeeper manual join (fallback) ──────────────────────────────────
+    // ── Shop manual join (fallback) ───────────────────────────────────────
     socket.on('join:shop', (shopId) => {
-      if (socket.userRole === 'shopkeeper' || socket.userRole === 'admin') {
-        socket.join(`shop:${shopId}`);
-        logger.info(`Socket ${socket.id} joined shop:${shopId}`);
-      }
+      if (!shopId) return;
+      socket.join(`shop:${shopId}`);
+      logger.info(`Socket ${socket.id} joined shop:${shopId}`);
+    });
+
+    // ── User join order room ──────────────────────────────────────────────
+    // User clicks on an order to watch real-time updates
+    socket.on('join-order', (orderId) => {
+      if (!orderId) return;
+      const room = `order:${orderId}`;
+      socket.join(room);
+      logger.info(`Socket ${socket.id} joined order room: ${room}`);
     });
 
     // ── Print Agent join ───────────────────────────────────────────────────

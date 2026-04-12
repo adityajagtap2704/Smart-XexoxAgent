@@ -27,6 +27,18 @@ export const joinOrderRoom = (orderId) => {
   s.emit('join-order', orderId);
 };
 
+export const joinShopRoom = (shopId) => {
+  const s = getSocket();
+  if (!shopId) return;
+  s.emit('join:shop', shopId);
+};
+
+export const onShopStatusUpdate = (callback) => {
+  const s = getSocket();
+  s.on('shop:status_update', callback);
+  return () => { s.off('shop:status_update', callback); };
+};
+
 export const onOrderUpdate = (callback) => {
   const s = getSocket();
   // FIX: was 'order-update' — backend emits 'order:status_update'

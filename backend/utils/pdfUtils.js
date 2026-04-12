@@ -1,6 +1,31 @@
+const path = require('path');
 const pdfParse = require('pdf-parse');
 const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
 const logger = require('../config/logger');
+
+const downloadFileBuffer = async (file) => {
+  if (file.buffer) return file.buffer;
+
+  const s3Client = new S3Client({
+    region: process.env.AWS_REGION,
+    credentials: {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    },
+  });
+
+  const command = new GetObjectCommand({
+    Bucket: process.env.AWS_S3_BUCKET,
+    Key: file.key,
+  });
+
+  const response = await s3Client.send(command);
+  const chunks = [];
+  for await (const chunk of response.Body) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+};
 
 /**
  * Count pages in a PDF that was just uploaded via multer-s3
@@ -8,39 +33,33 @@ const logger = require('../config/logger');
  */
 const countPDFPages = async (file) => {
   try {
-    // If file buffer is available (memory storage)
-    if (file.buffer) {
-      const data = await pdfParse(file.buffer);
-      return data.numpages;
-    }
-
-    // For S3 uploads, we download temporarily to count pages
-    // In production you might want to store this during upload using memory + S3 dual approach
-    const s3Client = new S3Client({
-      region: process.env.AWS_REGION,
-      credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-      },
-    });
-
-    const command = new GetObjectCommand({
-      Bucket: process.env.AWS_S3_BUCKET,
-      Key: file.key,
-    });
-
-    const response = await s3Client.send(command);
-    const chunks = [];
-    for await (const chunk of response.Body) {
-      chunks.push(chunk);
-    }
-    const buffer = Buffer.concat(chunks);
+    const buffer = await downloadFileBuffer(file);
     const data = await pdfParse(buffer);
     return data.numpages;
   } catch (err) {
     logger.warn(`PDF page count failed: ${err.message}`);
     return 0; // Return 0 if counting fails (not critical)
   }
+};
+
+const countImagePages = async (file) => 1;
+
+const countFilePages = async (file) => {
+  let mime = file.mimetype || '';
+  if (!mime) {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (ext === '.docx') mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    if (ext === '.doc') mime = 'application/msword';
+    if (ext === '.pdf') mime = 'application/pdf';
+    if (ext === '.png') mime = 'image/png';
+    if (ext === '.jpg' || ext === '.jpeg') mime = 'image/jpeg';
+  }
+
+  if (mime === 'application/pdf') return countPDFPages(file);
+  if (mime === 'image/jpeg' || mime === 'image/png' || mime === 'image/jpg') {
+    return countImagePages(file);
+  }
+  return 0;
 };
 
 /**
@@ -77,4 +96,4 @@ const getPrintablePageCount = (detectedPages, pageRange) => {
   return pages.length;
 };
 
-module.exports = { countPDFPages, parsePageRange, getPrintablePageCount };
+module.exports = { countFilePages, parsePageRange, getPrintablePageCount };

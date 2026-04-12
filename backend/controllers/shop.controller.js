@@ -2,7 +2,21 @@ const Shop = require('../models/Shop');
 const User = require('../models/User');
 const Order = require('../models/Order');
 const { AppError, asyncHandler } = require('../utils/helpers');
+const { emitToShop } = require('../config/socket');
 const logger = require('../config/logger');
+
+const findMyShop = async (userId) => {
+  let shop = await Shop.findOne({ owner: userId });
+  if (shop) return shop;
+
+  const user = await User.findById(userId).select('shop');
+  if (user?.shop) {
+    shop = await Shop.findById(user.shop);
+    if (shop) return shop;
+  }
+
+  return null;
+};
 
 // ─── Get Nearby Shops ─────────────────────────────────────────────────────────
 exports.getNearbyShops = asyncHandler(async (req, res) => {
@@ -67,7 +81,13 @@ exports.getShop = asyncHandler(async (req, res) => {
     .select('-bankDetails -upiId')
     .populate('owner', 'name phone');
   if (!shop) throw new AppError('Shop not found', 404);
-  res.status(200).json({ success: true, data: { shop } });
+
+  // Ensure bankDetails is not included in the response
+  const shopObj = shop.toObject();
+  delete shopObj.bankDetails;
+  delete shopObj.upiId;
+
+  res.status(200).json({ success: true, data: { shop: shopObj } });
 });
 
 // ─── Create Shop (Shopkeeper) ─────────────────────────────────────────────────
@@ -96,7 +116,7 @@ exports.createShop = asyncHandler(async (req, res) => {
 
 // ─── Update Shop ──────────────────────────────────────────────────────────────
 exports.updateShop = asyncHandler(async (req, res) => {
-  const shop = await Shop.findOne({ owner: req.user.id });
+  const shop = await findMyShop(req.user.id);
   if (!shop) throw new AppError('Shop not found', 404);
 
   const allowedUpdates = ['name', 'phone', 'email', 'address', 'location', 'pricing', 'services', 'operatingHours', 'bankDetails', 'upiId', 'isOpen'];
@@ -111,8 +131,16 @@ exports.updateShop = asyncHandler(async (req, res) => {
 
 // ─── Get Shop Dashboard Stats ─────────────────────────────────────────────────
 exports.getShopDashboard = asyncHandler(async (req, res) => {
-  const shop = await Shop.findOne({ owner: req.user.id });
-  if (!shop) throw new AppError('Shop not found', 404);
+  const shop = await findMyShop(req.user.id);
+  if (!shop) {
+    return res.status(200).json({
+      success: true,
+      data: {
+        shop: null,
+        stats: { pendingOrders: 0, todayOrders: 0, totalRevenue: 0, totalOrders: 0 }
+      }
+    });
+  }
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -143,11 +171,13 @@ exports.getShopDashboard = asyncHandler(async (req, res) => {
 
 // ─── Toggle Shop Open/Close ───────────────────────────────────────────────────
 exports.toggleShopStatus = asyncHandler(async (req, res) => {
-  const shop = await Shop.findOne({ owner: req.user.id });
+  const shop = await findMyShop(req.user.id);
   if (!shop) throw new AppError('Shop not found', 404);
 
   shop.isOpen = !shop.isOpen;
   await shop.save();
+
+  emitToShop(shop._id.toString(), 'shop:status_update', { isOpen: shop.isOpen });
 
   res.status(200).json({
     success: true,
@@ -178,7 +208,9 @@ exports.getShopReviews = asyncHandler(async (req, res) => {
 
 // ─── Get My Shop (simple object, for ShopDashboard header) ──────────────────
 exports.getMyShop = asyncHandler(async (req, res) => {
-  const shop = await Shop.findOne({ owner: req.user.id });
-  if (!shop) throw new AppError('Shop not found for this account', 404);
+  const shop = await findMyShop(req.user.id);
+  if (!shop) {
+    return res.status(200).json({ success: true, data: { shop: null } });
+  }
   res.status(200).json({ success: true, data: { shop } });
 });

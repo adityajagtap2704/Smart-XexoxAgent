@@ -30,6 +30,8 @@ export const authAPI = {
   register:        (data)  => api.post('/auth/register', data),
   login:           (data)  => api.post('/auth/login', data),
   verifyOTP:       (data)  => api.post('/auth/verify-otp', data),
+  verifyEmail:     (data)  => api.post('/auth/verify-email', data),
+  resendOTP:       (data)  => api.post('/auth/resend-otp', data),
   // FIX: was /auth/profile (route does not exist) — correct route is /auth/me
   getMe:           ()      => api.get('/auth/me'),
   getProfile:      ()      => api.get('/auth/me'),
@@ -62,6 +64,7 @@ export const orderAPI = {
   verifyPickup:    (data)          => api.post('/orders/verify-pickup', data),
   retryPayment:    (id)            => api.post(`/orders/retry/${id}`),
   resumePrint:     (id)            => api.post(`/orders/${id}/resume-print`),
+  triggerPrint:    (id)            => api.post(`/orders/${id}/trigger-print`),
   getPrintJob:     (id)            => api.get(`/orders/${id}/print-job`),
   extendExpiry:    (id)            => api.post(`/orders/${id}/extend`),
   // FIX: added missing accept / reject / getDocumentUrl
@@ -73,7 +76,7 @@ export const orderAPI = {
 // Shops
 export const shopAPI = {
   getAll:          ()      => api.get('/shops'),
-  getById:         (id)    => api.get(`/shops/${id}`),
+  getById:         (id)    => api.get(`/shops/${String(id)}`),
   create:          (data)  => api.post('/shops', data),
   update:          (data)  => api.patch('/shops/my-shop', data),
   delete:          (id)    => api.delete(`/shops/${id}`),
@@ -122,13 +125,13 @@ export const notificationAPI = {
 export const adminAPI = {
   getDashboard:  ()        => api.get('/admin/dashboard'),
   getAnalytics:  ()        => api.get('/admin/analytics'),
-  getRevenue:    ()        => api.get('/admin/revenue'),
-  getUsers:      ()        => api.get('/admin/users'),
+  getRevenue:    (query)   => api.get(`/admin/revenue${query ? `?${query}` : ''}`),
+  getUsers:      (query)   => api.get(`/admin/users${query ? `?${query}` : ''}`),
   toggleUser:    (id)      => api.patch(`/admin/users/${id}/toggle-status`),
-  getShops:      ()        => api.get('/admin/shops'),
+  getShops:      (query)   => api.get(`/admin/shops${query ? `?${query}` : ''}`),
   verifyShop:    (id, data)=> api.patch(`/admin/shops/${id}/verify`, data),
   setMargin:     (id, data)=> api.patch(`/admin/shops/${id}/margin`, data),
-  getOrders:     ()        => api.get('/admin/orders'),
+  getOrders:     (query)   => api.get(`/admin/orders${query ? `?${query}` : ''}`),
   broadcast:     (data)    => api.post('/admin/notifications/broadcast', data),
 };
 

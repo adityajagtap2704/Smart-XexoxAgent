@@ -1,21 +1,27 @@
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 
+const printingRangeSchema = new mongoose.Schema({
+  rangeStart: { type: Number, required: true, min: 1 },
+  rangeEnd: { type: Number, required: true, min: 1 },
+  copies: { type: Number, default: 1, min: 1, max: 100 },
+  colorMode: { type: String, enum: ['bw', 'color'], default: 'bw' },
+  sides: { type: String, enum: ['single', 'double'], default: 'single' },
+}, { _id: false });
+
 const documentSchema = new mongoose.Schema({
   originalName: { type: String, required: true },
   s3Key: { type: String, required: true },
   s3Url: { type: String, required: true },
   fileSize: Number,
   mimeType: String,
-  detectedPages: { type: Number, default: 0 },
+  detectedPages: { type: Number, default: 0, required: true },
   printingOptions: {
-    copies: { type: Number, default: 1, min: 1, max: 100 },
-    colorMode: { type: String, enum: ['bw', 'color'], default: 'bw' },
-    sides: { type: String, enum: ['single', 'double'], default: 'single' },
     paperSize: { type: String, enum: ['A4', 'A3', 'Letter'], default: 'A4' },
-    pageRange: { type: String, default: 'all' }, // e.g., 'all' or '1-5,7,10-12'
     orientation: { type: String, enum: ['portrait', 'landscape', 'auto'], default: 'auto' },
   },
+  // Per-range printing configuration (supports different colors/copies for different page ranges)
+  printingRanges: [printingRangeSchema],
   price: { type: Number, default: 0 },
   downloadedByShop: { type: Boolean, default: false },
   downloadedAt: Date,
@@ -39,7 +45,7 @@ const orderSchema = new mongoose.Schema(
     },
     documents: [documentSchema],
     additionalServices: {
-      binding: { type: Boolean, default: false },
+      spiralBinding: { type: Boolean, default: false },
       lamination: { type: Boolean, default: false },
       urgentPrinting: { type: Boolean, default: false },
     },

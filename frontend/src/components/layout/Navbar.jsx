@@ -153,10 +153,64 @@ const Navbar = () => {
           )}
         </div>
 
-        {/* Mobile toggle */}
-        <button className="md:hidden" onClick={() => setMobileOpen(!mobileOpen)}>
-          {mobileOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
-        </button>
+        {/* Mobile Navbar Actions */}
+        <div className="flex items-center gap-2 md:hidden">
+          {isAuthenticated && (
+            <div className="relative" ref={notifRef}>
+              <button 
+                onClick={() => { setNotifOpen(!notifOpen); if (!notifOpen && unreadCount > 0) handleMarkAllRead(); }}
+                className="relative flex h-9 w-9 items-center justify-center rounded-xl hover:bg-secondary transition-colors"
+              >
+                <Bell className="h-5 w-5 text-muted-foreground" />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-destructive text-[10px] font-bold text-white">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
+              </button>
+
+              {/* Mobile Notifications dropdown (simplified positioning) */}
+              <AnimatePresence>
+                {notifOpen && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 8, scale: 0.95 }} 
+                    animate={{ opacity: 1, y: 0, scale: 1 }} 
+                    exit={{ opacity: 0, y: 8, scale: 0.95 }}
+                    className="fixed right-4 top-16 left-4 sm:absolute sm:left-auto sm:right-0 sm:top-11 sm:w-80 rounded-xl border border-border bg-background shadow-2xl z-[60] overflow-hidden"
+                  >
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+                      <p className="font-semibold text-sm">Notifications</p>
+                      {unreadCount > 0 && (
+                        <button onClick={handleMarkAllRead} className="text-xs text-primary hover:underline">Mark all read</button>
+                      )}
+                    </div>
+                    <div className="max-h-[60vh] sm:max-h-80 overflow-y-auto">
+                      {notifications.length === 0 ? (
+                        <div className="px-4 py-8 text-center text-sm text-muted-foreground">No notifications yet</div>
+                      ) : notifications.slice(0, 20).map((n) => (
+                        <div key={n._id} className={`flex items-start gap-3 px-4 py-3 border-b border-border/50 hover:bg-secondary/30 transition-colors ${!n.isRead ? 'bg-primary/5' : ''}`}>
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-xs font-medium leading-snug ${!n.isRead ? 'text-foreground' : 'text-muted-foreground'}`}>{n.title}</p>
+                            <p className="text-xs text-muted-foreground mt-0.5 leading-snug">{n.message}</p>
+                            <p className="text-[10px] text-muted-foreground mt-1">{new Date(n.createdAt).toLocaleString('en-IN')}</p>
+                          </div>
+                          <button onClick={(e) => handleDeleteNotif(n._id, e)} className="text-muted-foreground hover:text-destructive mt-0.5 shrink-0">
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
+
+          {/* Mobile toggle */}
+          <button className="flex h-9 w-9 items-center justify-center rounded-xl hover:bg-secondary transition-colors" onClick={() => setMobileOpen(!mobileOpen)}>
+            {mobileOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
+          </button>
+        </div>
       </div>
 
       {/* Mobile menu */}
@@ -174,10 +228,6 @@ const Navbar = () => {
                   {user?.role === 'user' && (
                     <Link to="/orders" onClick={() => setMobileOpen(false)} className="rounded-lg px-3 py-2 text-sm font-medium hover:bg-secondary">Orders</Link>
                   )}
-                  <div className="flex items-center justify-between rounded-lg px-3 py-2">
-                    <span className="text-sm font-medium">Notifications</span>
-                    {unreadCount > 0 && <span className="rounded-full bg-destructive text-white text-xs px-1.5 py-0.5">{unreadCount}</span>}
-                  </div>
                   <button onClick={() => { handleLogout(); setMobileOpen(false); }} className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-destructive hover:bg-destructive/10">
                     <LogOut className="h-4 w-4" /> Logout
                   </button>

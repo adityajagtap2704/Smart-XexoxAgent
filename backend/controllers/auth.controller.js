@@ -60,9 +60,8 @@ exports.register = asyncHandler(async (req, res) => {
     throw new AppError(`User with this ${field} already exists`, 409);
   }
 
-  // Only allow user/shopkeeper role during registration (admin via seeding)
-  const allowedRoles = ['user', 'shopkeeper'];
-  const userRole = allowedRoles.includes(role) ? role : 'user';
+  // Only allow user role during registration (admin via seeding, shopkeeper manually by admin)
+  const userRole = 'user';
 
   const user = new User({ name, email, phone, password, role: userRole });
   const otp = user.generateOTP('email_verify');
@@ -128,24 +127,19 @@ exports.verifyEmail = asyncHandler(async (req, res) => {
 
   user.isEmailVerified = true;
 
-  // AUTO-LINK: If shopkeeper, automatically link them to the default shop
-  // This runs for every new shopkeeper — no manual Atlas linking needed
-  if (user.role === 'shopkeeper' && !user.shop) {
+  // AUTO-LINK: Automatically link new users to the default AISSMS shop
+  // All registered users are connected to the same shop for centralized management
+  if (!user.shop) {
     try {
-      // Find the shop that has no owner yet OR find by name
-      let shop = await Shop.findOne({ owner: null });
-      if (!shop) {
-        shop = await Shop.findOne({ name: /AISSMS/i });
-      }
+      // First, try to find the AISSMS shop (prioritize unowned shops)
+      let shop = await Shop.findOne({ name: /AISSMS|aissms/i });
+      
       if (shop) {
-        // Link shop → user (owner)
-        shop.owner = user._id;
-        await shop.save({ validateBeforeSave: false });
         // Link user → shop
         user.shop = shop._id;
-        logger.info(`Auto-linked shopkeeper ${user.email} to shop ${shop.name}`);
+        logger.info(`Auto-linked user ${user.email} to shop ${shop.name}`);
       } else {
-        logger.warn(`No available shop found to link shopkeeper ${user.email}`);
+        logger.warn(`No AISSMS shop found to link user ${user.email}`);
       }
     } catch (err) {
       logger.warn(`Auto-link shop failed for ${user.email}: ${err.message}`);
